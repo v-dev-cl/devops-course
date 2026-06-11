@@ -75,7 +75,6 @@ kind: ClusterPolicy
 metadata:
   name: disallow-latest-tag
 spec:
-  validationFailureAction: Audit
   background: true
   rules:
     - name: require-image-tag
@@ -85,6 +84,7 @@ spec:
               kinds:
                 - Pod
       validate:
+        failureAction: Audit
         message: "The ':latest' tag is not allowed; pin an immutable version."
         pattern:
           spec:
@@ -92,7 +92,9 @@ spec:
               - image: "!*:latest"
 ```
 
-The key piece is `validationFailureAction`. In **`Audit`** Kyverno **reports** the
+The key piece is `failureAction` (in recent Kyverno it lives per-rule, inside
+`validate`; in older versions it was `validationFailureAction` at the `spec` level).
+In **`Audit`** Kyverno **reports** the
 violation in a policy report but **does not block**: the resource is created
 anyway. In **`Enforce`** Kyverno **rejects** the resource at admission: it never
 gets to exist. You always roll out a policy in `Audit` first —you measure how
