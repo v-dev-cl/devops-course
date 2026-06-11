@@ -1,0 +1,90 @@
+---
+title: Alerting & SLOs
+description: How to define SLIs/SLOs, alert on symptoms, and avoid alert fatigue.
+objectives:
+  - Define SLI, SLO, and error budget for a service
+  - Alert on symptoms (what hurts the user) instead of causes
+  - Fight alert fatigue with burn-rate alerts and severities
+  - Connect the error budget to decisions on when to freeze releases
+minutes: 20
+---
+
+An alert has exactly one job: make a person drop what they're doing. If it fires
+and there's nothing to do, or nobody is affected, that alert is training you to
+ignore it. Most alerting problems aren't technical: they're judgment calls about
+*what* deserves to wake you up.
+
+## Symptoms vs. causes
+
+A **cause-based** alert fires on something internal: "CPU over 90%", "a pod
+restarted". The trouble is that many causes don't matter to the user —a pod can
+restart and the service keep answering perfectly— and many symptoms have no
+cause you anticipated.
+
+A **symptom-based** alert fires on what the user experiences: "5% of requests to
+`/search` are failing", "p99 latency crossed 2 s". **Alert on symptoms.** The
+mental rule: *page only on user pain* —let the phone ring only when someone out
+there is feeling it. CPU usage can be a dashboard you look at while investigating,
+not an alert that wakes you up.
+
+## Alert fatigue
+
+When everything alerts, nothing alerts. A channel that gets 200 notifications a
+day becomes background noise and the real alert gets lost among the false ones.
+The cure is brutal but simple: every alert that didn't lead to an action is a
+candidate to delete or downgrade. Separate **severities**: `critical` pages by
+phone (active user-facing loss); `warning` goes to a channel you check during
+business hours.
+
+## Alertmanager: the basics
+
+Prometheus evaluates the alert rules and, when one fires, sends the alert to
+**Alertmanager**, which decides what to do with it. Three concepts:
+
+- **Routes** — a tree that routes each alert to a receiver based on its labels.
+  `severity="critical"` goes to PagerDuty; `warning` goes to Slack.
+- **Grouping** — bundles related alerts into a single notification. If 30 pods
+  of the same service fail, you get *one* message, not 30.
+- **Silences** — you temporarily mute alerts matching certain labels. Planned
+  maintenance on `pricing`: you silence its alerts for two hours and wake nobody
+  for something you already know about.
+
+## SLI → SLO → error budget
+
+Here's the chain that gives alerting its rigor:
+
+- **SLI** (indicator): a measure of service health as the user sees it. E.g.:
+  *fraction of requests to `/search` served in under 500 ms*.
+- **SLO** (objective): the target on that SLI over a window. E.g.: *99% of
+  requests to `/search` under 500 ms over 30 days*.
+- **Error budget**: the complement of the SLO, what you *can afford* to get
+  wrong. If the target is 99%, the budget is **1%**.
+
+### The concrete math
+
+Say `/search` gets **2,000,000 requests** over 30 days. SLO = 99% under 500 ms.
+The error budget is 1%:
+
+```text
+budget = (1 − 0.99) × 2,000,000 = 20,000 "bad" requests allowed over 30 days
+```
+
+You have room for 20,000 slow or failed requests in the month. If by the first
+week you've already burned 18,000, there's almost nothing left: that's the signal
+to **freeze risky releases** and stabilize. If you're at 2,000 halfway through
+the month, you have budget to spare to deploy aggressively. The budget turns
+"do we deploy on Friday?" into a decision with numbers instead of gut feel.
+
+## Burn rate: the intuition
+
+You don't want to alert only once the budget is gone —by then it's too late— nor
+on every single slow request. **Burn rate** measures *how fast* you're consuming
+the budget. Burn rate 1× means that, at this pace, you spend exactly the whole
+budget over the full window (30 days). Burn rate 10× means you'd spend it 10
+times faster: in 3 days you're out. That's why you alert on a high *and
+sustained* burn rate: a 10× spike for 30 seconds is noise; 10× sustained for an
+hour is a real incident worth a page. This gives you alerts that fire early when
+the damage is fast and stay quiet on passing noise.
+
+In the last lesson of this module we put logs in order, the signal you open
+*after* a symptom alert told you something is wrong.

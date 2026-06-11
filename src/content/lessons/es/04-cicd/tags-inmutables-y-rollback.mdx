@@ -1,0 +1,172 @@
+---
+title: Tags inmutables y rollback (Lab 1)
+description: Reemplazar tags de rama por tags por SHA y hacer commit-back del tag al overlay, para que el rollback sea un git revert.
+objectives:
+  - Explicar por qué un tag por SHA es mejor que un tag de rama
+  - Implementar commit-back con kustomize edit set image en un workflow
+  - Evitar el loop infinito de commit-back con permissions y paths-ignore
+  - Hacer rollback revirtiendo el commit del bump
+minutes: 25
+---
+
+import LabCheck from '@/components/LabCheck';
+
+En la lección anterior vimos que `:master` es un tag mutable: se sobrescribe en
+cada push, así que "qué corre en prod" no tiene respuesta y no hay a qué volver.
+Este lab arregla eso. La idea tiene dos mitades:
+
+1. **Tags inmutables por SHA**: cada build se publica como `:sha-<shortsha>`, atado
+   a un commit exacto que nunca se sobrescribe.
+2. **Commit-back**: después de publicar, CI corre `kustomize edit set image` en el
+   overlay y hace commit del tag nuevo al repo. Así el repo siempre dice qué imagen
+   exacta debe correr — y el rollback es revertir ese commit.
+
+## El workflow objetivo
+
+Partimos del `build-and-publish.yml` que conoces y le agregamos un step de
+commit-back al final del job:
+
+```yaml
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}   # asegura checkout en rama, no detached HEAD
+
+      - name: Bump image tag in overlay
+        run: |
+          cd k8s/overlays/dev
+          kustomize edit set image app=ghcr.io/${{ github.repository }}:sha-${GITHUB_SHA::7}
+          git config user.name "ci-bot"
+          git config user.email "ci@users.noreply.github.com"
+          git commit -am "deploy: dev -> sha-${GITHUB_SHA::7}"
+          git push origin HEAD:${{ github.ref_name }}
+```
+
+En eventos `push`, `actions/checkout` deja el HEAD detached en el SHA del commit; sin `ref: github.ref_name` (o el push explícito a `HEAD:<rama>`), el `git push` falla con "you are not currently on a branch".
+
+`kustomize edit set image app=...` reescribe el campo `images:` del
+`kustomization.yaml` del overlay: cambia el `newTag` del placeholder `app` al
+nuevo `sha-<shortsha>`. No edita YAML a mano; modifica el campo correcto de forma
+segura. Luego CI hace commit y push de ese cambio: el repo queda como única fuente
+de verdad de qué imagen va en `dev`.
+
+## El lab
+
+Vas a hacer este cambio sobre `labs/sample-app`, el servicio "antes" del curso
+que reproduce las malas prácticas a propósito (incluido el tag de rama mutable).
+
+### Paso 1: Copia `labs/sample-app` a un repo de prueba
+
+GitHub solo ejecuta workflows del `.github/` **raíz** del repo, así que el
+workflow dentro de `labs/sample-app` está inerte ahí. Copia ese directorio a un
+repo nuevo y vacío (un *scratch repo*) para que el workflow se active:
+
+```bash
+cp -r labs/sample-app /tmp/lab1 && cd /tmp/lab1
+git init && git add -A && git commit -m "before state"
+# crea un repo vacío en GitHub y agrégalo como remote
+git remote add origin git@github.com:<tu-usuario>/lab1.git
+git push -u origin master
+```
+
+<LabCheck client:load stepId="04-cicd/lab-1/step-1" locale="es" />
+
+### Paso 2: Cambia los tags de rama por tags por SHA
+
+En `.github/workflows/build-and-publish.yml`, reemplaza la configuración de tags
+de `metadata-action` para que produzca un tag por SHA corto en vez del nombre de
+la rama:
+
+```yaml
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+```
+
+Ahora un push a `master` publica `ghcr.io/<tu-usuario>/lab1:sha-a1b2c3d` en vez de
+`:master`. Cada commit tiene su propia imagen, y ninguna se sobrescribe.
+
+<LabCheck client:load stepId="04-cicd/lab-1/step-2" locale="es" />
+
+### Paso 3: Agrega el step de commit-back
+
+Pega el step `Bump image tag in overlay` (el de arriba) como último step del job.
+Para que funcione necesitas **dos cosas más**, y entender por qué.
+
+Primero, dale permiso de escritura al token. El workflow base tiene
+`contents: read`; el commit-back necesita escribir:
+
+```yaml
+    permissions:
+      contents: write       # ¡el commit-back escribe en el repo!
+      packages: write
+```
+
+Segundo —y esto es lo importante— protégete del **loop infinito**. Piénsalo: el
+workflow corre con `on: push`. El commit-back hace un `git push`. Ese push
+dispararía el workflow de nuevo, que haría otro commit-back, que dispararía otra
+corrida... para siempre, quemando minutos de Actions.
+
+La cura es el `paths-ignore` que ya tiene el workflow:
+
+```yaml
+on:
+  push:
+    branches: [master, development]
+    paths-ignore: ['k8s/**', '**.md', 'skaffold.yaml']
+```
+
+El commit-back **solo** toca archivos bajo `k8s/overlays/`. Como
+`paths-ignore: ['k8s/**']` le dice a CI que ignore pushes que solo tocan `k8s/**`,
+el push del bump **no** dispara una corrida nueva. El loop se rompe. (La otra
+técnica equivalente es poner `[skip ci]` en el mensaje de commit del bump; acá
+preferimos `paths-ignore` porque ya separa CI de los manifiestos de CD.)
+
+<LabCheck client:load stepId="04-cicd/lab-1/step-3" locale="es" />
+
+### Paso 4: Empuja un cambio y verifica el commit-back
+
+Haz un cambio cualquiera en el código (por ejemplo, edita el `greeting` en
+`src/server.js`), haz commit y push. Espera a que el workflow termine, luego trae
+los cambios de CI y mira el historial del overlay:
+
+```bash
+git pull
+git log --oneline k8s/overlays/dev
+```
+
+Deberías ver un commit de `ci-bot` con el mensaje `deploy: dev -> sha-<shortsha>`,
+y el `kustomization.yaml` del overlay apuntando al nuevo tag por SHA. CI editó el
+repo por ti: el estado deseado quedó registrado en git.
+
+<LabCheck client:load stepId="04-cicd/lab-1/step-4" locale="es" />
+
+## Rollback = revertir el commit del bump
+
+Acá está el premio. Como cada deploy es un commit que cambia el tag de imagen,
+**volver atrás es un `git revert` de ese commit**:
+
+```bash
+git revert <sha-del-commit-de-bump>
+git push
+```
+
+Eso restaura el `newTag` anterior (un SHA inmutable que **sí sigue existiendo** en
+el registry, porque nunca se sobrescribió). No hay que reconstruir nada ni adivinar
+qué imagen corría: el historial de git es el historial de deploys. Compáralo con el
+mundo de tags mutables, donde "rollback" significaba reconstruir y rezar.
+
+<aside>
+
+**Aplícalo de verdad.** Este mismo cambio va en cualquiera de tus repos de servicios reales:
+cambia `type=ref,event=branch` por `type=sha,prefix=sha-,format=short`, agrega el
+step de commit-back con `contents: write`, y confirma que el `paths-ignore` ya
+cubre `k8s/**`. Hazlo primero en un servicio de bajo tráfico y observa un ciclo
+completo de deploy antes de propagarlo al resto.
+
+</aside>
+
+En la próxima lección formalizamos la promoción dev → prod con GitHub
+environments y reglas de protección.

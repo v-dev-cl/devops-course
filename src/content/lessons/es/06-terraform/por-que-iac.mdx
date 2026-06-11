@@ -1,0 +1,77 @@
+---
+title: Por qué Infraestructura como Código
+description: Qué problemas resuelve IaC frente al click-ops y por qué importa para tu flota.
+objectives:
+  - Contrastar aprovisionamiento manual (click-ops) con IaC declarativa
+  - Explicar idempotencia y por qué el mismo plan converge siempre al mismo estado
+  - Distinguir herramientas declarativas (Terraform) de imperativas (scripts)
+  - Versionar y revisar cambios de infraestructura como cualquier otro código
+minutes: 14
+---
+
+Imagina que se cae el VPS donde corre tu cluster k3s. Para
+levantarlo de nuevo a mano: entras a la consola de tu proveedor de VPS, creas el servidor,
+eliges la imagen, configuras el firewall (¿era el puerto 6443 abierto o
+cerrado?), apuntas el registro DNS al nuevo IP, instalas k3s... Una hora de
+clicks, y la mitad de la configuración vive solo en tu memoria. Eso es
+**click-ops**: aprovisionar infraestructura a mano por una interfaz gráfica.
+
+## El problema del click-ops
+
+El click-ops tiene tres pecados. **No es reproducible**: nadie puede recrear
+exactamente lo que hiciste, ni tú dentro de seis meses. **No deja registro**:
+no hay diff, no hay historia, no sabes quién abrió ese puerto ni por qué.
+Y produce **drift**: la infraestructura real se desvía de lo que crees que
+tienes, porque alguien tocó algo en la consola "rápido para probar" y nunca lo
+documentó.
+
+Infraestructura como Código (IaC) ataca los tres: describes la infraestructura
+que quieres en archivos de texto, los versionas en git y una herramienta se
+encarga de hacerla realidad. Recrear ese VPS pasa de una hora de clicks a un
+`terraform apply`.
+
+## Declarativo vs imperativo
+
+Hay un espectro de cómo "codificar" infraestructura, de menos a más declarativo:
+
+- **Scripts bash** — imperativos: dices *los pasos* (`curl`, `if exists`,
+  `create`). Tú manejas los errores y la idempotencia a mano.
+- **Ansible** — declarativo a nivel de configuración de máquinas, pero
+  orientado al "estado de un host" más que a aprovisionar recursos cloud.
+- **Terraform / OpenTofu** — declarativos para *recursos*: describes el estado
+  final ("quiero un servidor con esta imagen, este firewall y este DNS") y la
+  herramienta calcula los pasos para llegar ahí.
+- **Crossplane** — lleva lo declarativo dentro de Kubernetes: defines
+  infraestructura como recursos del propio cluster.
+
+La diferencia clave es la **idempotencia**: con Terraform corres `apply` una vez
+y crea el servidor; lo corres de nuevo y no hace nada, porque el estado real ya
+coincide con lo declarado. Un script bash ingenuo, en cambio, intentaría crear
+un segundo servidor. El mismo plan converge siempre al mismo estado, lo corras
+una o diez veces.
+
+## Dónde encaja Terraform (y dónde no)
+
+Ojo con una confusión común: ya estás haciendo IaC para tus *workloads*. Tus
+manifiestos de Kubernetes en git, aplicados por ArgoCD, son infraestructura
+declarativa y versionada. GitOps cubre la capa de aplicaciones.
+
+Terraform vive en la **capa de abajo**: lo que Kubernetes da por sentado.
+VMs, redes, registros DNS, buckets de almacenamiento, bases de datos
+administradas, el propio cluster. Cosas que no son un Pod y que ArgoCD no sabe
+crear. En tu caso: el VPS, su firewall, el DNS de tu dominio, y
+mañana —cuando adoptes AWS— la VPC, los buckets S3 y los RDS. Terraform crea el
+suelo; GitOps despliega encima.
+
+## OpenTofu: la bifurcación
+
+En 2023 HashiCorp cambió la licencia de Terraform de open source (MPL) a la
+Business Source License (BSL), más restrictiva. La comunidad respondió con un
+fork: **OpenTofu**, ahora bajo la Linux Foundation y con licencia MPL. Es
+*drop-in compatible* con Terraform en el rango de versiones cubierto: misma
+sintaxis HCL, mismos providers, mismos comandos (`tofu` en vez de `terraform`).
+En este módulo todo lo que veas con `terraform` funciona igual con `tofu`. Cuál
+usar es una decisión de licenciamiento y gobernanza, no técnica.
+
+En la próxima lección escribes tu primer recurso y recorres el ciclo
+`init → plan → apply → destroy`.

@@ -1,0 +1,92 @@
+---
+title: Seguridad de imágenes
+description: Usuarios no-root, bases mínimas, .dockerignore, escaneo de vulnerabilidades y por qué los secrets quedan grabados en las capas.
+objectives:
+  - Aplicar usuario no-root y bases mínimas para reducir la superficie de ataque
+  - Usar .dockerignore para evitar que secrets y basura entren al build context
+  - Explicar por qué un secret borrado sigue vivo en la historia de capas
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Una imagen que publicas a GHCR puede correr en cualquier nodo de tu cluster y la
+puede bajar cualquiera con acceso al registry. Endurecerla no es opcional: cada
+paquete de más es una vulnerabilidad potencial, cada secret filtrado es un
+incidente. Esta lección junta las prácticas mínimas de seguridad de imágenes.
+
+## No-root y bases mínimas
+
+Dos decisiones reducen la **superficie de ataque** de entrada:
+
+- **Correr como no-root.** Como vimos con `USER node`, si un atacante logra
+  ejecución dentro del contenedor, correr como `root` le da permiso de escribir
+  en todo el filesystem e intentar escapar a través de vulnerabilidades del
+  kernel. Como usuario sin privilegios, queda contenido.
+- **Base mínima.** Cada binario y librería en tu imagen es código que puede
+  tener un CVE. `node:24-alpine` (Alpine, ~5 MB de base) trae muchísimo menos que
+  `node:24` (Debian completo). Las imágenes **distroless** van más lejos: solo
+  el runtime, sin shell ni gestor de paquetes, así que ni siquiera hay un `bash`
+  que un atacante pueda invocar.
+
+## .dockerignore: controla el build context
+
+Cuando corres `docker build .`, ese `.` es el **build context**: Docker empaqueta
+todo el directorio y se lo manda al daemon. Sin filtro, eso incluye `node_modules`
+local, `.git` (con toda tu historia), `.env` con credenciales y logs. Dos
+problemas: builds más lentos y, peor, secrets que terminan dentro de la imagen
+por un `COPY . .` descuidado.
+
+El `.dockerignore` excluye archivos del build context, igual que `.gitignore`
+hace con git:
+
+```
+node_modules
+.git
+.env
+*.log
+dist
+```
+
+Excluir `.env` y `.git` no es cosmético: es la diferencia entre que tus
+credenciales queden o no embebidas en una imagen que sube a un registry
+compartido.
+
+## Por qué un secret borrado sigue ahí
+
+Este es el error más traicionero. Supón que escribes:
+
+```dockerfile
+COPY .env .              # copia el secret a una capa
+RUN ./build-con-secret.sh
+RUN rm .env              # "lo borro, ya está seguro"
+```
+
+**No está seguro.** Cada instrucción crea una capa, y las capas son inmutables y
+acumulativas. El `rm .env` crea una capa *nueva* que oculta el archivo, pero la
+capa anterior —donde el `.env` existe con tu credencial— sigue dentro de la
+imagen. Cualquiera que tenga la imagen puede hacer `docker history` o extraer esa
+capa y leer el secret. **Un secret que tocó una capa está comprometido para
+siempre**; la única solución es rotar la credencial y nunca copiarla al build.
+Para secrets en build time usa `--mount=type=secret`, que no persiste en capas.
+
+## Escanear antes de publicar
+
+Antes de hacer `push`, escanea la imagen en busca de CVEs conocidos. Dos
+herramientas estándar: **trivy** (open source, también analiza dependencias) y
+**docker scout** (integrado en Docker). Te listan las vulnerabilidades por
+severidad para que decidas si bloqueas el deploy. En el módulo 4 este escaneo se
+vuelve un paso automático del pipeline.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Escanea en busca de vulnerabilidades la imagen ghcr.io/v-dev-cl/worker:master con trivy."
+  accept={[/^trivy image .+$/]}
+  hints={["La herramienta es 'trivy'.", "El subcomando para escanear imágenes es 'image', seguido del nombre."]}
+  solution="trivy image ghcr.io/v-dev-cl/worker:master"
+/>
+
+Con esto cierras el módulo de Docker: sabes construir imágenes chicas, seguras y
+reproducibles. En el módulo 4 las atamos a un pipeline de CI/CD que reemplaza el
+deploy manual.

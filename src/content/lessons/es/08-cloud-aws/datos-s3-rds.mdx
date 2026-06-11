@@ -1,0 +1,96 @@
+---
+title: Datos — S3 y RDS
+description: Almacenamiento de objetos con S3 y bases de datos gestionadas con RDS, durabilidad, clases y trade-offs.
+objectives:
+  - Explicar la durabilidad de S3 y elegir entre sus storage classes por costo/acceso
+  - Distinguir almacenamiento de objetos (S3) de bloque y archivo
+  - Evaluar el trade-off de una base gestionada (RDS) frente a self-hosted
+  - Reconocer respaldos, multi-AZ y réplicas de lectura como decisiones de operación
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Tus datos son lo único verdaderamente irreemplazable de tu stack. AWS tiene dos
+servicios que probablemente sean los primeros candidatos a adoptar: **S3** para
+archivos y **RDS** para bases de datos relacionales.
+
+## S3: almacenamiento de objetos
+
+S3 guarda **objetos** (un archivo + metadata) en **buckets**. No es un disco
+(eso es **block storage**, EBS) ni un sistema de archivos compartido (eso es
+**file storage**, EFS): es una API HTTP para subir y bajar blobs. Ideal para
+**imágenes de productos** y **backups**: cosas que escribes una vez y lees muchas.
+
+Su número estrella es la **durabilidad de 11 nueves (99.999999999%)**: AWS
+replica cada objeto a través de múltiples AZs. Perder un objeto es estadísticamente
+casi imposible. Ojo: durabilidad (no perder el dato) no es lo mismo que
+disponibilidad (poder accederlo siempre).
+
+### Storage classes
+
+Eliges clase según frecuencia de acceso, equilibrando costo de almacenamiento vs
+costo de acceso:
+
+- **S3 Standard** — acceso frecuente (imágenes de productos que se sirven a diario).
+- **S3 Standard-IA** (Infrequent Access) — más barato de guardar, más caro de leer;
+  para datos que tocas poco.
+- **S3 Glacier / Deep Archive** — archivado frío, baratísimo de guardar pero con
+  minutos u horas de espera para recuperar; ideal para backups viejos que casi
+  nunca lees pero debes retener.
+
+### Presigned URLs y lifecycle rules
+
+Para que un usuario suba o baje un objeto **sin** darle credenciales AWS, generas
+una **presigned URL**: un link temporal y firmado que da permiso acotado a ese
+objeto por un rato. Tu backend la firma; el cliente sube directo a S3 sin pasar
+el archivo por tu servidor.
+
+Las **lifecycle rules** automatizan el ciclo de vida: "objetos en este prefijo,
+muévelos a Glacier a los 30 días y bórralos a los 365". Para tus backups, eso es
+retención automática sin un cron que mantener.
+
+## RDS vs tu Mongo/Postgres self-hosted
+
+RDS es una **base de datos relacional gestionada** (Postgres, MySQL, etc.): AWS se
+encarga de parches, backups automáticos, failover Multi-AZ y réplicas de lectura.
+Tú reservas a operar tu esquema y tus queries.
+
+Tu realidad es **Mongo autogestionado en tu VPS**. Pesa esto con honestidad:
+
+- RDS es **relacional**; Mongo es documental. El equivalente gestionado de Mongo
+  en AWS es **DocumentDB** (compatible con la API de Mongo, no es Mongo real).
+- **Lo que comprarías**: backups y failover sin operarlos, Multi-AZ (réplica
+  síncrona en otra AZ con failover automático) y réplicas de lectura para escalar
+  lecturas pesadas.
+- **Lo que NO comprarías**: sale **más caro**, hay menos control fino (no entras
+  al host), y DocumentDB no cubre el 100% de features de Mongo. Si tu Mongo anda
+  bien y tienes una disciplina de backup decente, RDS/DocumentDB resuelve un dolor
+  que quizás no tienes.
+
+## Disciplina de backup/restore
+
+Un backup que nunca restauraste no es un backup, es una esperanza. RDS automatiza
+los snapshots, pero igual debes **probar el restore** periódicamente. Si te quedas
+con Mongo self-hosted, esa disciplina (dump, copia off-site, restore de prueba)
+corre por tu cuenta —es exactamente la carga que una base gestionada te quita.
+
+## La trampa del egress, otra vez
+
+Si una app **chatty** (muchas queries chicas o lecturas grandes y frecuentes)
+queda **cruzando internet** entre tu k3s en tu VPS y un RDS/S3 en AWS, el egress
+te puede salir carísimo. La regla: **datos y cómputo viven cerca**. Si mueves la
+base a AWS, evalúa mover también el servicio que más la golpea, o el ahorro
+operativo se lo come la transferencia.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Lista los objetos del bucket de imágenes de productos. Usa la AWS CLI sobre el bucket 'shop-product-images'."
+  accept={[/^aws s3 ls s3:\/\/shop-product-images$/, /^aws s3 ls s3:\/\/shop-product-images\/$/]}
+  hints={["Es aws s3 ls seguido del URI s3:// del bucket.", "aws s3 ls s3://shop-product-images"]}
+  solution="aws s3 ls s3://shop-product-images"
+/>
+
+Con cómputo y datos cubiertos, cerramos el módulo con el deep-dive que el curso
+prometió: ESO contra AWS Secrets Manager, de verdad.

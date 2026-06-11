@@ -1,0 +1,91 @@
+---
+title: Alerting y SLOs
+description: Cómo definir SLIs/SLOs, alertar sobre síntomas y evitar la fatiga de alertas.
+objectives:
+  - Definir SLI, SLO y error budget para un servicio
+  - Alertar sobre síntomas (lo que duele al usuario) en vez de causas
+  - Combatir la fatiga de alertas con burn-rate y severidades
+  - Conectar el error budget con decisiones de cuándo frenar releases
+minutes: 20
+---
+
+Una alerta tiene un solo trabajo: hacer que una persona deje lo que está
+haciendo. Si suena y no hay nada que hacer, o nadie se ve afectado, esa alerta
+te está entrenando para ignorarla. La mayoría de los problemas de alerting no son
+técnicos: son de criterio sobre *qué* merece despertarte.
+
+## Síntomas vs. causas
+
+Una alerta **basada en causa** se dispara por algo interno: "CPU sobre 90%",
+"un pod se reinició". El problema es que muchas causas no le importan al usuario
+—un pod puede reiniciarse y el servicio seguir respondiendo perfecto— y muchos
+síntomas no tienen una causa que hayas anticipado.
+
+Una alerta **basada en síntoma** se dispara por lo que el usuario experimenta:
+"el 5% de las requests a `/search` están fallando", "la latencia p99 pasó de
+2 s". **Alerta sobre síntomas.** La regla mental: *page only on user pain* —que
+solo te llame el teléfono cuando alguien afuera lo está sintiendo. El uso de CPU
+puede ser un dashboard que miras al investigar, no una alerta que te despierta.
+
+## Fatiga de alertas
+
+Cuando todo alerta, nada alerta. Un canal que recibe 200 notificaciones al día
+se vuelve ruido de fondo y la alerta real se pierde entre las falsas. La cura es
+brutal pero simple: cada alerta que no llevó a una acción es candidata a
+borrarse o a bajar de severidad. Separa **severidades**: `critical` llama por
+teléfono (pérdida activa para el usuario); `warning` va a un canal que revisas en
+horario hábil.
+
+## Alertmanager: lo básico
+
+Prometheus evalúa las reglas de alerta y, cuando una se dispara, manda la alerta
+a **Alertmanager**, que decide qué hacer con ella. Tres conceptos:
+
+- **Routes** — un árbol que enruta cada alerta a un receptor según sus labels.
+  Las `severity="critical"` van a PagerDuty; las `warning`, a Slack.
+- **Grouping** — junta alertas relacionadas en una sola notificación. Si 30 pods
+  del mismo servicio fallan, recibes *un* mensaje, no 30.
+- **Silences** — silencias temporalmente alertas que matcheen ciertos labels.
+  Mantención planificada en `pricing`: silencias sus alertas dos horas y no
+  despiertas a nadie por algo que ya sabes.
+
+## SLI → SLO → error budget
+
+Aquí está la cadena que le da rigor al alerting:
+
+- **SLI** (indicator): una medida de la salud del servicio vista por el usuario.
+  Ej.: *proporción de requests a `/search` servidas en menos de 500 ms*.
+- **SLO** (objective): la meta sobre ese SLI en una ventana. Ej.: *99% de las
+  requests a `/search` bajo 500 ms en 30 días*.
+- **Error budget**: el complemento del SLO, lo que *te puedes dar el lujo* de
+  fallar. Si el objetivo es 99%, el budget es **1%**.
+
+### El cálculo concreto
+
+Supón que `/search` recibe **2.000.000 de requests** en 30 días. SLO = 99% bajo
+500 ms. El error budget es 1%:
+
+```text
+budget = (1 − 0.99) × 2.000.000 = 20.000 requests "malas" permitidas en 30 días
+```
+
+Tienes margen para 20.000 requests lentas o fallidas en el mes. Si en la primera
+semana ya gastaste 18.000, queda casi nada: es señal de **frenar releases
+arriesgadas** y estabilizar. Si vas en 2.000 a mitad de mes, tienes budget de
+sobra para desplegar agresivo. El budget convierte "¿desplegamos el viernes?" en
+una decisión con números en vez de corazonadas.
+
+## Burn rate: la intuición
+
+No quieres alertar recién cuando se acabó el budget —ahí ya es tarde— ni por
+cada request lenta suelta. El **burn rate** mide *qué tan rápido* estás
+consumiendo el budget. Burn rate 1× significa que, a ese ritmo, gastas
+exactamente todo el budget en la ventana completa (30 días). Burn rate 10×
+significa que lo gastarías 10 veces más rápido: en 3 días te quedas sin nada.
+Por eso se alerta sobre burn rate alto y *sostenido*: un pico de 10× por 30
+segundos es ruido; 10× sostenido por una hora es un incidente real que merece
+una llamada. Esto te da alertas que suenan temprano cuando el daño es rápido y
+callan ante el ruido pasajero.
+
+En la última lección de este módulo ordenamos los logs, la señal que abres
+*después* de que una alerta de síntoma te dijo que algo anda mal.

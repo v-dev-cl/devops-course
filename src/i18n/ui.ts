@@ -1,0 +1,101 @@
+export const LOCALES = ['es', 'en'] as const;
+export type Locale = (typeof LOCALES)[number];
+
+export const ui = {
+  es: {
+    'site.title': 'Curso Interactivo de DevOps',
+    'site.tagline': 'De CI manual a GitOps, aplicado a infraestructura real',
+    'nav.home': 'Inicio',
+    'nav.assessment': 'Evaluación de nivel',
+    'nav.modules': 'Módulos',
+    'lesson.prev': 'Anterior',
+    'lesson.next': 'Siguiente',
+    'lesson.markComplete': 'Marcar como completada',
+    'lesson.completed': 'Lección completada',
+    'lesson.underConstruction': 'En construcción — por ahora revisa los objetivos y el quiz del módulo.',
+    'lesson.minutes': 'min',
+    'lesson.objectives': 'Objetivos de la lección',
+    'quiz.title': 'Quiz de la lección',
+    'quiz.moduleTitle': 'Quiz del módulo',
+    'quiz.check': 'Comprobar',
+    'quiz.nextQuestion': 'Siguiente pregunta',
+    'quiz.correct': '¡Correcto!',
+    'quiz.incorrect': 'Incorrecto',
+    'quiz.finish': 'Terminar quiz',
+    'quiz.score': 'Puntaje',
+    'quiz.retry': 'Reintentar',
+    'terminal.placeholder': 'Escribe el comando y presiona Enter…',
+    'terminal.hint': 'Pista',
+    'terminal.solution': 'Ver solución',
+    'terminal.correct': 'Comando correcto ✔',
+    'terminal.incorrect': 'No es el comando esperado, intenta de nuevo',
+    'lab.verified': 'Verifiqué este paso en mi cluster',
+    'assessment.title': 'Evaluación de nivel',
+    'assessment.intro': 'Responde estas preguntas para saber dónde empezar. Los módulos donde tengas 80% o más quedarán marcados como completados (puedes abrirlos igual).',
+    'assessment.start': 'Comenzar',
+    'assessment.retake': 'Repetir evaluación',
+    'assessment.results': 'Resultados por tema',
+    'assessment.passed': 'Aprobado por evaluación',
+    'assessment.recommended': 'Te recomendamos partir por',
+    'progress.resume': 'Continuar donde quedaste',
+    'progress.export': 'Exportar progreso',
+    'progress.import': 'Importar progreso',
+    'progress.lessonsDone': 'lecciones completadas',
+    'module.outline': 'Contenido en desarrollo',
+    'module.label': 'Módulo',
+  },
+  en: {
+    'site.title': 'Interactive DevOps Course',
+    'site.tagline': 'From manual CI to GitOps, applied to real infrastructure',
+    'nav.home': 'Home',
+    'nav.assessment': 'Placement assessment',
+    'nav.modules': 'Modules',
+    'lesson.prev': 'Previous',
+    'lesson.next': 'Next',
+    'lesson.markComplete': 'Mark as complete',
+    'lesson.completed': 'Lesson completed',
+    'lesson.underConstruction': 'Under construction — check the objectives and the module quiz for now.',
+    'lesson.minutes': 'min',
+    'lesson.objectives': 'Lesson objectives',
+    'quiz.title': 'Lesson quiz',
+    'quiz.moduleTitle': 'Module quiz',
+    'quiz.check': 'Check',
+    'quiz.nextQuestion': 'Next question',
+    'quiz.correct': 'Correct!',
+    'quiz.incorrect': 'Incorrect',
+    'quiz.finish': 'Finish quiz',
+    'quiz.score': 'Score',
+    'quiz.retry': 'Retry',
+    'terminal.placeholder': 'Type the command and press Enter…',
+    'terminal.hint': 'Hint',
+    'terminal.solution': 'Show solution',
+    'terminal.correct': 'Correct command ✔',
+    'terminal.incorrect': 'Not the expected command, try again',
+    'lab.verified': 'I verified this step on my cluster',
+    'assessment.title': 'Placement assessment',
+    'assessment.intro': 'Answer these questions to find where to start. Modules where you score 80% or more get marked as completed (you can still open them).',
+    'assessment.start': 'Start',
+    'assessment.retake': 'Retake assessment',
+    'assessment.results': 'Results by topic',
+    'assessment.passed': 'Passed via assessment',
+    'assessment.recommended': 'We recommend starting with',
+    'progress.resume': 'Resume where you left off',
+    'progress.export': 'Export progress',
+    'progress.import': 'Import progress',
+    'progress.lessonsDone': 'lessons completed',
+    'module.outline': 'Content in development',
+    'module.label': 'Module',
+  },
+} as const;
+
+export type UiKey = keyof typeof ui.es;
+
+export function t(locale: Locale, key: UiKey): string {
+  return ui[locale][key] ?? ui.es[key];
+}
+
+/** Build a site URL respecting the GitHub Pages base path. Always trailing-slashed. */
+export function url(...parts: string[]): string {
+  const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+  return [base, ...parts].join('/') + '/';
+}

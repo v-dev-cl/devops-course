@@ -1,0 +1,103 @@
+---
+title: IAM y VPC
+description: Identidad y permisos con IAM y la red privada con VPC, las dos bases de todo en AWS.
+objectives:
+  - Distinguir usuarios, grupos y roles IAM y cuándo usar cada uno
+  - Aplicar least privilege con políticas y assume-role
+  - Diseñar una VPC con subnets públicas/privadas, route tables y NAT
+  - Controlar tráfico con security groups y NACLs
+minutes: 22
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+IAM (identidad y permisos) y VPC (la red) son las dos bases sobre las que se
+apoya todo lo demás en AWS. Si las entiendes, el resto de servicios encaja
+encima sin sorpresas.
+
+## IAM: usuarios vs roles vs políticas
+
+Tres conceptos, tres responsabilidades:
+
+- **Usuario** — una identidad humana de larga vida, con credenciales fijas
+  (password de consola y/o access keys). Úsalo para personas, idealmente con MFA.
+- **Rol** — una identidad **sin credenciales permanentes** que algo *asume*
+  temporalmente y recibe credenciales que expiran. Es lo correcto para
+  **workloads**: una app en EC2/ECS/EKS asume un rol y nunca tiene una llave fija.
+- **Política** — un documento JSON que dice **qué acciones** se permiten sobre
+  **qué recursos**. Se adjunta a usuarios, grupos o roles.
+
+La regla de oro: **roles para workloads, nunca access keys de larga vida** dentro
+de una app. Una llave estática filtrada (en git, en un log, en una imagen Docker)
+es la brecha número uno en AWS. Los roles entregan credenciales temporales que
+rotan solas.
+
+## Anatomía de una política: least privilege
+
+Least privilege = das exactamente los permisos necesarios, ni uno más. Esta
+política da **solo lectura** sobre **un** bucket S3 concreto, nada más:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOnlyOneBucket",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::shop-product-images",
+        "arn:aws:s3:::shop-product-images/*"
+      ]
+    }
+  ]
+}
+```
+
+Fíjate en los dos `Resource`: el bucket **en sí** (`arn:...:bucket`) para
+`ListBucket`, y los **objetos dentro** (`/*`) para `GetObject`. Es un error común
+poner solo uno y que falle. Y nunca uses `"Resource": "*"` con `"Action": "s3:*"`
+salvo que de verdad quieras dar todo sobre todo.
+
+## VPC: tu red privada
+
+Una **VPC** es una red virtual aislada con su propio rango de IPs (ej. `10.0.0.0/16`).
+Dentro la divides en **subnets**:
+
+- **Subnet pública** — tiene ruta a un *Internet Gateway*; lo que vive ahí puede
+  recibir tráfico de internet (un load balancer, un bastion host).
+- **Subnet privada** — no tiene ruta directa a internet; ahí van tus apps y bases
+  de datos. Si necesitan *salir* a internet (ej. llamar a una API), lo hacen por
+  un **NAT Gateway** ubicado en la subnet pública. Las **route tables** son las que
+  definen estos caminos.
+
+El patrón estándar: balanceador en la pública, app y RDS en la privada. La base
+de datos nunca expuesta a internet.
+
+## Security groups vs NACLs (tu intuición on-prem)
+
+Aquí tu experiencia operando servidores te sirve directo:
+
+- **Security group** ≈ **firewall stateful por recurso**. Lo adjuntas a una
+  instancia/ENI; si permites el tráfico de entrada, la respuesta de salida se
+  permite automáticamente (es *stateful*, recuerda la conexión). Solo tiene reglas
+  *allow*. Es tu herramienta del día a día.
+- **NACL** (Network ACL) — firewall **stateless a nivel de subnet**, con reglas
+  allow *y* deny, evaluadas por número. Stateless significa que debes permitir
+  ida **y** vuelta explícitamente. Se usa poco; los security groups cubren casi todo.
+
+Si vienes de `ufw`/iptables en tus VPS, un security group es básicamente
+eso pero gestionado y adjunto al recurso.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Lista tus security groups para revisar las reglas. Usa la AWS CLI."
+  accept={[/^aws ec2 describe-security-groups$/]}
+  hints={["El servicio es ec2 y la acción describe-security-groups.", "aws ec2 describe-security-groups"]}
+  solution="aws ec2 describe-security-groups"
+/>
+
+Con IAM controlando *quién hace qué* y la VPC controlando *qué se comunica con
+qué*, ya tienes las bases. En la próxima lección elegimos dónde corre tu cómputo:
+EC2, ECS o EKS.

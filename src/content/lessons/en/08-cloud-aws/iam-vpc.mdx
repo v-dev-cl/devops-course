@@ -1,0 +1,103 @@
+---
+title: IAM & VPC
+description: Identity and permissions with IAM and the private network with VPC, the two foundations of everything in AWS.
+objectives:
+  - Tell IAM users, groups, and roles apart and when to use each
+  - Apply least privilege with policies and assume-role
+  - Design a VPC with public/private subnets, route tables, and NAT
+  - Control traffic with security groups and NACLs
+minutes: 22
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+IAM (identity and permissions) and VPC (the network) are the two foundations
+everything else in AWS rests on. Understand them and the rest of the services slot
+on top without surprises.
+
+## IAM: users vs roles vs policies
+
+Three concepts, three responsibilities:
+
+- **User** — a long-lived human identity, with fixed credentials (console password
+  and/or access keys). Use it for people, ideally with MFA.
+- **Role** — an identity **without permanent credentials** that something *assumes*
+  temporarily and receives expiring credentials for. It's the right thing for
+  **workloads**: an app on EC2/ECS/EKS assumes a role and never holds a fixed key.
+- **Policy** — a JSON document that says **which actions** are allowed on **which
+  resources**. It attaches to users, groups, or roles.
+
+The golden rule: **roles for workloads, never long-lived access keys** inside an
+app. A leaked static key (in git, in a log, in a Docker image) is the number-one
+breach in AWS. Roles hand out temporary credentials that rotate on their own.
+
+## Anatomy of a policy: least privilege
+
+Least privilege = you grant exactly the needed permissions, not one more. This
+policy grants **read-only** on **one** specific S3 bucket, nothing else:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOnlyOneBucket",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::shop-product-images",
+        "arn:aws:s3:::shop-product-images/*"
+      ]
+    }
+  ]
+}
+```
+
+Note the two `Resource` entries: the bucket **itself** (`arn:...:bucket`) for
+`ListBucket`, and the **objects inside** (`/*`) for `GetObject`. A common mistake
+is listing only one and having it fail. And never use `"Resource": "*"` with
+`"Action": "s3:*"` unless you really mean to grant everything on everything.
+
+## VPC: your private network
+
+A **VPC** is an isolated virtual network with its own IP range (e.g. `10.0.0.0/16`).
+Inside it you split into **subnets**:
+
+- **Public subnet** — has a route to an *Internet Gateway*; whatever lives there
+  can receive internet traffic (a load balancer, a bastion host).
+- **Private subnet** — has no direct route to the internet; that's where your apps
+  and databases go. If they need to *reach out* to the internet (e.g. call an API),
+  they do so through a **NAT Gateway** placed in the public subnet. The **route
+  tables** are what define these paths.
+
+The standard pattern: load balancer in the public subnet, app and RDS in the
+private subnet. The database never exposed to the internet.
+
+## Security groups vs NACLs (your on-prem intuition)
+
+Here your experience operating servers maps directly:
+
+- **Security group** ≈ **stateful firewall per resource**. You attach it to an
+  instance/ENI; if you allow inbound traffic, the outbound response is allowed
+  automatically (it's *stateful*, it remembers the connection). It only has *allow*
+  rules. It's your day-to-day tool.
+- **NACL** (Network ACL) — a **stateless firewall at the subnet level**, with allow
+  *and* deny rules, evaluated by number. Stateless means you must allow inbound
+  **and** outbound explicitly. It's rarely used; security groups cover almost
+  everything.
+
+If you come from `ufw`/iptables on your VPS, a security group is basically
+that, but managed and attached to the resource.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="List your security groups to review the rules. Use the AWS CLI."
+  accept={[/^aws ec2 describe-security-groups$/]}
+  hints={["The service is ec2 and the action is describe-security-groups.", "aws ec2 describe-security-groups"]}
+  solution="aws ec2 describe-security-groups"
+/>
+
+With IAM controlling *who does what* and the VPC controlling *what talks to what*,
+you have the foundations. In the next lesson we pick where your compute runs: EC2,
+ECS, or EKS.

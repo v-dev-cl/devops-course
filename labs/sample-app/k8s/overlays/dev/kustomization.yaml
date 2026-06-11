@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sample-dev
+resources:
+  - ../../base
+images:
+  - name: app
+    newName: ghcr.io/v-dev-cl/sample-app
+    newTag: development   # LAB 1 FIXES THIS: mutable branch tag
+configMapGenerator:
+  - name: sample-app-config
+    literals:
+      - GREETING=hola dev
+secretGenerator:
+  - name: sample-app-secrets
+    literals:
+      - API_KEY=super-secret-dev-key   # LAB 3 FIXES THIS: secret committed to git

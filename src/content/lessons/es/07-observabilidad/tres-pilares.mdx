@@ -1,0 +1,73 @@
+---
+title: Los tres pilares de la observabilidad
+description: Logs, métricas y trazas, qué pregunta responde cada uno y cuándo usar cuál.
+objectives:
+  - Definir logs, métricas y trazas y la pregunta que responde cada pilar
+  - Elegir la señal correcta para un síntoma dado en tus microservicios
+  - Distinguir monitoreo (conoces la pregunta) de observabilidad (la descubres)
+  - Conectar una traza con sus logs y métricas vía un correlation id
+minutes: 16
+---
+
+Tienes decenas de servicios NestJS corriendo en k3s. Algo está lento. ¿Por dónde
+partes? La observabilidad se apoya en tres tipos de señal, y cada una responde
+una pregunta distinta. Confundirlas es caro: terminas pagando por almacenar
+gigas de logs cuando lo que necesitabas era una métrica de una línea.
+
+## Las tres preguntas
+
+- **Logs — ¿qué pasó?** Eventos discretos con detalle: "el job `sync-offers`
+  falló con `ECONNREFUSED` a las 14:32". Son tu narrativa: alta resolución,
+  alto costo por evento.
+- **Métricas — ¿cuánto y cuándo?** Números agregados en el tiempo: requests por
+  segundo, latencia p95, memoria usada. Baratas de guardar (una serie temporal
+  es solo números), perfectas para dashboards y alertas.
+- **Trazas — ¿dónde, en qué eslabón de la cadena?** El recorrido de una sola
+  request a través de varios servicios: el gateway llamó a `catalog`, que llamó
+  a `pricing`, que esperó 800 ms en Mongo. Responden el "¿dónde se fue el
+  tiempo?" cuando una request cruza varios servicios.
+
+## Cuándo cada una es la herramienta equivocada
+
+Las métricas **no** te dicen *por qué*. Ves que la tasa de error subió a 5%,
+pero la métrica no contiene el stack trace; para eso vas a los logs. Los logs
+**no** sirven para responder "¿cuál es mi latencia p99 esta semana?": tendrías
+que parsear millones de líneas, y eso es justo lo que una métrica de tipo
+histogram resuelve barato.
+
+El enemigo silencioso es la **cardinalidad**. Una métrica con un label por cada
+`user_id` o `request_id` genera millones de series temporales y revienta
+Prometheus. Esos identificadores de alta cardinalidad pertenecen a los logs y a
+las trazas, no a las métricas. Lo veremos en detalle en la próxima lección.
+
+## Monitoreo vs. observabilidad
+
+**Monitoreo** es vigilar preguntas que ya sabes hacer: "¿está arriba el
+servicio?", "¿pasó del 80% de CPU?". **Observabilidad** es poder responder
+preguntas que no anticipaste —"¿por qué *solo* los usuarios de la región sur,
+*solo* en checkout, ven timeouts?"— sin desplegar código nuevo. Monitoreo
+prepara dashboards; observabilidad te deja improvisar consultas cuando el
+incidente no se parece a ninguno anterior.
+
+## Cómo se conectan: el correlation id
+
+Las tres señales se vuelven mucho más útiles cuando comparten un hilo. Si cada
+request entrante recibe un `trace_id` y ese id viaja en los logs de cada
+servicio que toca y en los spans de la traza, entonces saltas de "vi un error
+en el dashboard" → "aquí está la traza completa" → "aquí está el log con el
+stack trace exacto" en segundos. Sin ese hilo, tienes tres pilas de datos que
+no se hablan. Profundizamos en correlation ids en la lección de logs.
+
+## La verdad honesta sobre tracing para un operador solo
+
+Logs y métricas dan el 90% del valor con poco esfuerzo: prom-client expone
+métricas en minutos, y tus servicios ya escriben logs. El **tracing** distribuido
+(OpenTelemetry) es real y poderoso, pero adoptarlo cuesta: instrumentar cada
+servicio, correr un colector, pagar almacenamiento de spans. Para una persona
+operando decenas de servicios, no empieces por ahí. Adopta tracing **el día en que las
+preguntas de latencia entre servicios empiecen a dolerte de verdad** —cuando
+"¿qué servicio de la cadena está lento?" te cueste una tarde de adivinanzas. Ese
+día OpenTelemetry vale el costo; antes, es sobre-ingeniería.
+
+En las próximas lecciones bajamos a tierra: instrumentamos métricas con
+Prometheus y Grafana, definimos alertas y SLOs, y dejamos los logs en forma.

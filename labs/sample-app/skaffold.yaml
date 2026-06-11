@@ -1,0 +1,17 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: sample-app
+profiles:
+  - name: dev
+    manifests:
+      kustomize:
+        paths: [k8s/overlays/dev]
+    deploy:
+      kubectl: {}
+  - name: prod
+    manifests:
+      kustomize:
+        paths: [k8s/overlays/prod]
+    deploy:
+      kubectl: {}

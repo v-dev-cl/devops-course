@@ -1,0 +1,138 @@
+---
+title: Prometheus y Grafana
+description: El modelo pull de Prometheus, PromQL básico y cómo visualizar métricas en Grafana.
+objectives:
+  - Explicar el modelo pull de Prometheus y el rol del endpoint /metrics
+  - Diferenciar tipos de métrica (counter, gauge, histogram) y cuándo usar cada uno
+  - Escribir queries PromQL básicas con rate y agregación por label
+  - Controlar la cardinalidad de labels para no reventar Prometheus
+minutes: 22
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Prometheus no espera que tus servicios le manden datos. Al revés: él los va a
+**buscar**. Cada cierto intervalo (por defecto 15 s) hace un `GET` al endpoint
+`/metrics` de cada target configurado y guarda lo que encuentre. Eso es el
+**modelo pull**, y tiene una ventaja concreta: si un servicio se cae, el scrape
+falla y Prometheus lo sabe al toque, sin que el servicio tenga que avisar nada.
+
+## El formato de exposición
+
+`/metrics` devuelve texto plano, una métrica por línea, con `# HELP` y `# TYPE`
+de contexto:
+
+```text
+# HELP http_requests_total Total de requests HTTP
+# TYPE http_requests_total counter
+http_requests_total{method="GET",route="/search",status="200"} 1027
+http_requests_total{method="GET",route="/search",status="500"} 3
+```
+
+El nombre de la métrica, los **labels** entre llaves y el valor. Los labels son
+dimensiones por las que después vas a filtrar y agrupar.
+
+## Los tres tipos que usarás
+
+- **Counter** — solo sube (o se resetea a 0 al reiniciar el proceso). Cuentas
+  acumuladas: requests totales, jobs procesados, errores. Nunca lo lees crudo;
+  lees su *tasa de cambio* con `rate()`.
+- **Gauge** — sube y baja. Un valor instantáneo: conexiones abiertas, tamaño de
+  la cola de Kafka, memoria usada.
+- **Histogram** — reparte observaciones en buckets para calcular percentiles.
+  Es lo que usas para latencia: expone series `_bucket`, `_sum` y `_count`.
+
+## La trampa de la cardinalidad
+
+Cada combinación distinta de labels crea una serie temporal nueva. `route` tiene
+pocos valores: bien. Pero un label `user_id` o `order_id` crea una serie por
+cada usuario u orden: millones de series, y Prometheus se cae por memoria.
+**Regla de oro: nada de ids de alta cardinalidad en labels.** Eso va a los logs.
+
+## Instrumentar un servicio NestJS con prom-client
+
+Así se ve en el worker de persistencia, que consume jobs de Kafka. Un counter
+para jobs procesados y un histogram para la latencia del handler:
+
+```ts
+import { Counter, Histogram, register } from 'prom-client';
+
+const jobsProcessed = new Counter({
+  name: 'worker_jobs_processed_total',
+  help: 'Jobs procesados por el worker',
+  labelNames: ['topic', 'status'], // status: success | error
+});
+
+const handlerDuration = new Histogram({
+  name: 'worker_handler_duration_seconds',
+  help: 'Duración del handler de cada job',
+  labelNames: ['topic'],
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+});
+
+async function handle(job: Job) {
+  const end = handlerDuration.startTimer({ topic: job.topic });
+  try {
+    await process(job);
+    jobsProcessed.inc({ topic: job.topic, status: 'success' });
+  } catch (e) {
+    jobsProcessed.inc({ topic: job.topic, status: 'error' });
+    throw e;
+  } finally {
+    end(); // observa la duración en el histogram
+  }
+}
+
+// Expón el endpoint que Prometheus va a scrapear
+app.get('/metrics', async (_req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
+});
+```
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Verifica a mano qué expone tu servicio: haz un curl al endpoint de métricas en el puerto 3000."
+  accept={[/^curl (-s )?(http:\/\/)?localhost:\d+\/metrics$/]}
+  hints={["Prometheus scrapea por HTTP el path /metrics.", "curl http://localhost:3000/metrics"]}
+  solution="curl http://localhost:3000/metrics"
+/>
+
+## PromQL: el kit de partida
+
+PromQL es el lenguaje de consulta. Cuatro patrones cubren casi todo:
+
+```promql
+# Tasa de jobs por segundo en los últimos 5 min (rate sobre un counter)
+rate(worker_jobs_processed_total[5m])
+
+# Lo mismo, sumado y agrupado por topic
+sum by (topic) (rate(worker_jobs_processed_total[5m]))
+
+# Tasa de errores: errores / total
+sum(rate(worker_jobs_processed_total{status="error"}[5m]))
+  / sum(rate(worker_jobs_processed_total[5m]))
+
+# Latencia p95 del handler (histogram_quantile sobre rate de _bucket)
+histogram_quantile(
+  0.95,
+  sum by (le) (rate(worker_handler_duration_seconds_bucket[5m]))
+)
+```
+
+Dos reglas que casi todos rompen al principio: `rate()` **necesita un counter y
+un rango** (`[5m]`, eso es un *range vector*), y `histogram_quantile` opera sobre
+el `rate()` de las series `_bucket`, agregadas dejando el label `le` (los límites
+de bucket). Sin el `le`, el cálculo del percentil no funciona.
+
+## De PromQL a un panel de Grafana
+
+Grafana se conecta a Prometheus como datasource y un panel es, esencialmente,
+una query PromQL dibujada. Pegas `sum by (topic) (rate(...[5m]))` en un panel de
+tipo *Time series* y tienes una línea por topic. Para la tasa de error usas un
+panel *Stat* con la query de errores/total y un umbral en rojo sobre 1%. Tus
+dashboards existentes funcionan así: cada panel es una PromQL guardada.
+
+En la próxima lección convertimos estas métricas en alertas que solo suenan
+cuando al usuario le duele.

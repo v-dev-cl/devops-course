@@ -1,0 +1,77 @@
+---
+title: Registries y tags
+description: Publicar imágenes a GHCR, autenticar con PAT o GITHUB_TOKEN y por qué los tags mutables rompen tus deploys.
+objectives:
+  - Autenticar y nombrar imágenes para GHCR con el formato ghcr.io/owner/repo:tag
+  - Explicar por qué un tag mutable como :master hace imposible saber qué corre en prod
+  - Elegir entre tags por SHA, semver y digest para deploys reproducibles
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Un **registry** es el repositorio remoto donde viven tus imágenes para que
+cualquier máquina las baje (`pull`) y corra. Tú usas **GHCR** (GitHub Container
+Registry, `ghcr.io`). Construyes la imagen en local o en CI, le pones un nombre y
+la subes (`push`); k3s después la baja al desplegar.
+
+## Nombrar y autenticar en GHCR
+
+El nombre completo de una imagen en GHCR sigue el formato
+`ghcr.io/<owner>/<repo>:<tag>`. Para tus servicios sería
+`ghcr.io/v-dev-cl/worker:master`. El `owner` es la organización o usuario; el
+`tag` identifica la versión.
+
+Para `push` necesitas autenticarte, y acá hay dos caminos:
+
+- **PAT (Personal Access Token)**: un token que generas a mano con scope
+  `write:packages`. Lo usas para `docker login` desde tu notebook o en sistemas
+  fuera de GitHub Actions. Vive hasta que lo revoques.
+- **`GITHUB_TOKEN`**: un token efímero que GitHub Actions inyecta
+  automáticamente en cada job. No lo creas tú, dura lo que dura el workflow y se
+  revoca solo. Es la forma correcta de autenticar desde el pipeline — no metas
+  un PAT como secret si `GITHUB_TOKEN` alcanza.
+
+El login se ve así: `echo $TOKEN | docker login ghcr.io -u <usuario> --password-stdin`.
+
+## El problema de los tags mutables (el puente al módulo 4)
+
+Un **tag es mutable**: `:master` es solo una etiqueta que apunta a una imagen, y
+cada push la mueve a la imagen nueva. Esto parece cómodo pero rompe cosas
+fundamentales:
+
+- **"¿Qué corre en prod?" no tiene respuesta.** Si desplegaste `:master` hace
+  una semana y desde entonces hubo cinco pushes, el `:master` que corre tu pod
+  no es el `:master` del registry hoy. El tag no te dice qué código es.
+- **El rollback significa reconstruir.** Si la versión nueva falla, no puedes
+  "volver al `:master` anterior" porque ese tag ya no existe — fue sobrescrito.
+  Tienes que reconstruir desde un commit viejo y rezar que salga igual.
+
+Este es exactamente el agujero que el módulo 4 va a tapar con CI/CD: en vez de
+empujar siempre a `:master`, el pipeline va a etiquetar cada build con algo
+**inmutable**.
+
+## Alternativas inmutables: SHA, semver y digest
+
+- **Tag por SHA de commit**: `ghcr.io/v-dev-cl/worker:a1b2c3d`. Cada build queda
+  atado a un commit exacto; nunca se sobrescribe. Puedes mirar un pod y saber
+  qué código corre.
+- **Semver**: `:1.4.2` para releases versionadas a mano o por tags de git. Legible
+  para humanos y, por convención, inmutable: no re-publicas un `1.4.2` distinto.
+- **Digest**: `ghcr.io/v-dev-cl/worker@sha256:...`. El digest es el hash del
+  **contenido** de la imagen, calculado por el registry. Es la referencia más
+  fuerte posible: aunque alguien mueva un tag, el digest siempre apunta a los
+  mismos bytes exactos. Anclar (`pin`) por digest en tus manifiestos de k8s
+  garantiza que despliegas la imagen que probaste, byte por byte.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Etiqueta tu imagen local 'app' para subirla a GHCR bajo el owner v-dev-cl con el tag 1.0.0."
+  accept={[/^docker tag app(:\w+)? ghcr\.io\/[\w-]+\/app:[\w.-]+$/]}
+  hints={["El comando es 'docker tag <origen> <destino>'.", "El destino sigue el formato ghcr.io/v-dev-cl/app:1.0.0"]}
+  solution="docker tag app ghcr.io/v-dev-cl/app:1.0.0"
+/>
+
+En la próxima lección cerramos el módulo endureciendo la seguridad de las
+imágenes que acabamos de aprender a publicar.

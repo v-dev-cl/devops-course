@@ -1,0 +1,140 @@
+---
+title: Survival Shell
+description: The commands and the pipe/redirection mechanics you need to operate services from a terminal.
+objectives:
+  - Chain commands with pipes and filter output with grep, awk, and cut
+  - Redirect stdout and stderr to files and between descriptors (2>&1)
+  - Combine find, xargs, and command substitution for batch operations
+  - Inspect and edit service config files without an IDE
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+When a service goes down at 3 AM you don't have your IDE: you have an SSH
+session and a terminal. The good news is that the Unix shell is a composition
+machine: small commands that each do one thing, wired together, let you answer
+questions no GUI solves as fast. With dozens of NestJS services on k3s this isn't
+theory — it's how you find *what* broke before you can fix it.
+
+## The three descriptors and the pipe
+
+Every process is born with three channels: **stdin** (0, the input), **stdout**
+(1, normal output) and **stderr** (2, errors). The pipe `|` connects one
+command's stdout to the next command's stdin. That's the whole trick: you build
+a pipeline that lines of text flow through.
+
+```bash
+kubectl get pods -A | grep CrashLoopBackOff
+```
+
+`kubectl` lists every pod; `grep` lets through only the lines containing
+`CrashLoopBackOff`. Instead of eyeballing 200 pods, you see the three that are
+broken.
+
+## Filter and slice: grep, cut, awk
+
+`grep` searches for patterns. Its flags are gold: `-i` ignores case, `-v`
+inverts (lines that *don't* match), `-c` counts, `-E` enables extended regex.
+
+```bash
+journalctl -u sync-worker | grep -i error      # errors only
+journalctl -u sync-worker | grep -vc DEBUG      # count lines that are NOT DEBUG
+```
+
+`cut` and `awk` split lines into columns. `cut -d' ' -f1` takes the first
+space-separated field; `awk` is a full language but 90% of the time you use it
+to print columns:
+
+```bash
+# which node each pod is on: NAME and NODE columns
+kubectl get pods -A -o wide | awk '{print $2, $8}'
+
+# unique IPs that hit port 4000, sorted by frequency
+ss -tn | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -rn
+```
+
+`sort | uniq -c` is the shell's universal counter: it sorts, groups
+duplicates, and counts. You'll use it for everything, from IPs to error codes.
+
+## Redirection: stdout, stderr, and 2>&1
+
+The pipe connects processes; redirection connects them to **files**. `>` sends
+stdout to a file (overwriting), `>>` appends, `2>` redirects stderr.
+
+```bash
+node server.js > server.log         # only stdout to the file; errors still on screen
+node server.js 2> errors.log        # only stderr to the file
+```
+
+The combination you have to memorize is `2>&1`: "send descriptor 2 wherever 1
+points now". If you send stdout to a file and *then* redirect stderr to the
+same destination, you capture all of the process's output in a single log:
+
+```bash
+node server.js > server.log 2>&1 &
+```
+
+Order matters: `2>&1 > log` does not do what you think, because `2>&1` is
+evaluated *before* `>` changes stdout's destination. Rule of thumb: file first,
+`2>&1` last. The trailing `&` sends the process to the background.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Count how many lines containing the word ERROR are in the file app.log."
+  accept={['grep -c ERROR app.log', /^grep ERROR app\.log \| wc -l$/]}
+  hints={["grep has a flag that counts matches instead of printing them.", "The flag is -c, or you can count lines with | wc -l."]}
+  solution="grep -c ERROR app.log"
+/>
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Start 'node server.js' in the background and send ALL of its output (stdout and stderr) to the file server.log."
+  accept={[/^node server\.js > server\.log 2>&1( &)?$/]}
+  hints={["Redirect stdout with > and then merge stderr with 2>&1.", "File first, 2>&1 last: node server.js > server.log 2>&1"]}
+  solution="node server.js > server.log 2>&1 &"
+/>
+
+## find, xargs, and command substitution
+
+`find` locates files by name, date, or size; `xargs` takes that list and passes
+it as arguments to another command. Together they do batch operations:
+
+```bash
+# delete rotated logs older than 7 days
+find /var/log/services -name '*.log.*' -mtime +7 -print0 | xargs -0 rm -f
+```
+
+Note the `-print0 | xargs -0`: it separates names with a null byte instead of
+spaces, so a file whose name contains spaces doesn't get split into two
+arguments. It's the safe version of the pattern.
+
+**Command substitution** `$(...)` replaces the expression with its output. It
+feeds one command with the result of another. Watch out: a pod name carries
+replicaset and hash suffixes (`sync-worker-7d9f8b9c4-xq2lp`), so you can't pass it
+to `deployment/...`. What does work is reading the deployment from a *label* on
+the crashing pod:
+
+```bash
+# restart the deployment that owns the crashing pod
+pod=$(kubectl get pods -n prod | grep CrashLoop | awk '{print $1}' | head -1)
+kubectl rollout restart deployment/$(kubectl get pod "$pod" -n prod -o jsonpath='{.metadata.labels.app}')
+```
+
+## Editing configs without an IDE
+
+On a bare server you have `nano` (simple: `Ctrl+O` saves, `Ctrl+X` exits) or
+`vim` (`i` to insert, `Esc` then `:wq` to save and quit). For one-off changes
+without opening an editor, `sed -i` edits in place:
+
+```bash
+sed -i 's/LOG_LEVEL=debug/LOG_LEVEL=info/' /etc/services/worker.env
+```
+
+Before touching a critical file, make a copy: `cp worker.env worker.env.bak`.
+It costs two seconds and saves you a manual rollback.
+
+In the next lesson we look at what happens *behind* those processes: PIDs,
+signals, and how systemd keeps them alive.

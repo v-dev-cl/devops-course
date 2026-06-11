@@ -1,0 +1,81 @@
+---
+title: Cómputo — ECS vs EKS
+description: Opciones de cómputo para contenedores en AWS y cuándo conviene ECS, EKS o quedarte en k3s.
+objectives:
+  - Comparar EC2, ECS y EKS según operación, costo y curva de aprendizaje
+  - Explicar el trade-off entre ECS (más simple) y EKS (Kubernetes gestionado)
+  - Decidir cuándo migrar de tu k3s on-premise a EKS y cuándo no
+  - Reconocer el rol de Fargate como cómputo sin gestionar nodos
+minutes: 20
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Ya corres Kubernetes bien en on-premise: k3s, ArgoCD, ESO, kustomize. Eso cambia
+por completo la decisión de cómputo en AWS, porque tu inversión en k8s es un
+**activo**, no algo que quieras tirar a la basura.
+
+## El espectro de cómputo
+
+De más crudo a más gestionado:
+
+- **EC2** — máquinas virtuales. Tú instalas, parchas y operas todo encima.
+  Máximo control, máxima carga operativa. Es el "VM autogestionada" de AWS.
+- **ECS + Fargate** — orquestador de contenedores **propio de AWS**. Con Fargate
+  no gestionas nodos: declaras una *task* (contenedor + CPU/memoria) y AWS corre
+  el contenedor sin que veas la VM. Simple, pero **vocabulario nuevo** (task
+  definition, service, cluster ECS) y cierto **lock-in** a AWS.
+- **EKS** — **Kubernetes gestionado**. AWS opera el control plane (API server,
+  etcd); tú traes tus nodos (o Fargate) y tus manifiestos. Tu ArgoCD, ESO y
+  kustomize **funcionan igual** que en k3s.
+
+## La tabla honesta para alguien que ya domina k8s
+
+| Opción | Conservas tu inversión k8s | Carga operativa | Costo base | Lock-in |
+|---|---|---|---|---|
+| EC2 (k3s tú mismo) | Sí | Alta (operas todo) | Solo las VMs | Bajo |
+| ECS + Fargate | No (vocabulario nuevo) | Baja | Por task | Alto |
+| EKS | **Sí** (ArgoCD/ESO/kustomize) | Media | **~$73/mes** + nodos | Medio |
+
+El **control plane de EKS cuesta ~$0.10/hora ≈ ~$73/mes**, *más* el costo de los
+nodos (EC2 o Fargate) por separado. Comparado con tu k3s en tu VPS —donde el
+control plane no te cuesta nada extra— es un cargo fijo nuevo a justificar.
+
+## ¿Cuándo migrar a EKS y cuándo no?
+
+**EKS tiene sentido si**: necesitas estar en AWS por cercanía a otros servicios
+AWS (un RDS, colas SQS), quieres dejar de operar el control plane, y valoras
+conservar tu stack de GitOps tal cual. La curva es baja porque ya sabes k8s.
+
+**Quédate en k3s si**: tu cluster anda bien, el costo te cierra y no tienes una
+razón fuerte para estar dentro de AWS. **No migres por moda.** Decenas de servicios
+felices en k3s en tu VPS europeo es un setup difícil de mejorar en costo. EKS no te hace
+"más DevOps"; solo cambia quién opera el control plane a cambio de plata.
+
+## Lambda para event glue
+
+Lambda corre **funciones** sin servidor, gatilladas por eventos (un objeto que
+llega a S3, un mensaje en una cola, un cron). No es para tus servicios NestJS de
+larga vida —es para **pegamento**: tareas cortas y esporádicas. Una función tipo `fetch-worker`
+es justo ese caso: una función que se dispara, hace su pega y muere, sin un pod
+corriendo 24/7. Pagas por invocación y por ms de ejecución; si no corre, no pagas.
+
+## Spot instances
+
+Las **spot instances** son capacidad EC2 sobrante a 60–90% de descuento, con la
+salvedad de que **AWS te las puede quitar con ~2 minutos de aviso**. Perfectas
+para workloads tolerantes a interrupción: jobs batch, workers de cola que pueden
+reintentar, entornos de CI. **No** para algo que no puede morir de golpe. En EKS
+es común un node group spot para los workers y uno on-demand para lo crítico.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Después de crear un cluster EKS, configura kubectl para apuntarle. Usa la AWS CLI para la región sa-east-1 y el cluster 'main-prod'."
+  accept={[/^aws eks update-kubeconfig --name main-prod --region sa-east-1$/, /^aws eks update-kubeconfig --region sa-east-1 --name main-prod$/]}
+  hints={["El comando es aws eks update-kubeconfig con --name y --region.", "aws eks update-kubeconfig --name main-prod --region sa-east-1"]}
+  solution="aws eks update-kubeconfig --name main-prod --region sa-east-1"
+/>
+
+Con el cómputo claro, falta el otro gran eje: dónde viven tus datos. En la próxima
+lección vemos S3 y RDS.

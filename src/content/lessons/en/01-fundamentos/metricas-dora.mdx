@@ -1,0 +1,61 @@
+---
+title: The Four DORA Metrics
+description: How to measure whether your software delivery is improving using the four DORA metrics.
+objectives:
+  - Define the four DORA metrics and what each is for
+  - Place a team in the elite/high/medium/low ranges
+  - Estimate each metric for your own current flow
+minutes: 12
+---
+
+How do you know your DevOps is improving and not just changing? The **DORA**
+research program (DevOps Research and Assessment) found four metrics that
+predict the performance of a delivery team. They are **outcome metrics**, not
+vanity metrics: they do not measure how many lines you write or how many
+meetings you have, but how fast and how safely you deliver value.
+
+## The four metrics
+
+- **Deployment frequency**: how often you put code into production. Elite
+  deploys on demand, multiple times a day; low, less than once a month.
+- **Lead time for changes**: how long it takes from making a `commit` to that
+  change running in production. Elite: under an hour; low: more than a month.
+- **Change failure rate**: what percentage of your deploys causes an incident
+  that requires remediation (a `rollback`, a hotfix). Elite/high: 0–15%; low:
+  much higher.
+- **MTTR** (mean time to restore): how long you take to recover the service when
+  a change breaks production. Elite: under an hour; low: more than a week.
+
+The first two measure **speed**; the last two, **stability**. DORA's key finding
+is that they are not opposed: elite teams are fast *and* stable at the same
+time. Going slow does not make you safer.
+
+## Why they are outcome, not vanity, metrics
+
+A vanity metric ("we wrote 5,000 lines this week") can go up while the product
+gets worse. DORA metrics measure the outcome that really matters —delivering
+working changes, fast and without breaking things— so you cannot fake them by
+working more hours. If your lead time drops from a week to a day, that is real
+for whoever is waiting on the feature.
+
+## Estimate them for your flow today
+
+Apply them to your current setup of dozens of microservices with manual deploys:
+
+- **Deployment frequency**: count how many times you ran `skaffold deploy` last
+  week. If it was "whenever I remembered", you are probably medium or low.
+- **Lead time**: measure the time between the `commit` you merged and the moment
+  you ran `skaffold deploy` with that image. If you deploy by hand, that gap is
+  usually hours or days, not minutes.
+- **Change failure rate**: of your last 10 deploys, how many forced you into a
+  hotfix or rollback? That percentage is your rate.
+- **MTTR**: the last time a deploy broke a service, how long did it take you to
+  stabilize it?
+
+One important detail: **actually measuring deployment frequency requires
+automated deploys**. If you rely on your memory to note every `skaffold deploy`,
+the data will be poor. That is why measurement and automation go together: when
+the deploy runs through a pipeline, the metric records itself.
+
+In the module's final lesson we audit your full stack against CALMS and DORA,
+and build the course roadmap.

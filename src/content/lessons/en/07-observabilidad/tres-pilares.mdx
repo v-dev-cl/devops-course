@@ -1,0 +1,72 @@
+---
+title: The Three Pillars of Observability
+description: Logs, metrics, and traces, the question each one answers, and when to use which.
+objectives:
+  - Define logs, metrics, and traces and the question each pillar answers
+  - Pick the right signal for a given symptom in your microservices
+  - Tell monitoring (you know the question) apart from observability (you discover it)
+  - Connect a trace with its logs and metrics via a correlation id
+minutes: 16
+---
+
+You've got dozens of NestJS services running on k3s. Something is slow. Where do you
+start? Observability rests on three kinds of signal, and each answers a
+different question. Confusing them is expensive: you end up paying to store
+gigabytes of logs when what you needed was a one-line metric.
+
+## The three questions
+
+- **Logs — what happened?** Discrete events with detail: "the `sync-offers` job
+  failed with `ECONNREFUSED` at 14:32." They're your narrative: high resolution,
+  high cost per event.
+- **Metrics — how much, and when?** Numbers aggregated over time: requests per
+  second, p95 latency, memory used. Cheap to store (a time series is just
+  numbers), perfect for dashboards and alerts.
+- **Traces — where, in which link of the chain?** The journey of a single
+  request across several services: the gateway called `catalog`, which called
+  `pricing`, which waited 800 ms on Mongo. They answer "where did the time go?"
+  when a request crosses several services.
+
+## When each one is the wrong tool
+
+Metrics **don't** tell you *why*. You see the error rate climbed to 5%, but the
+metric holds no stack trace; for that you go to the logs. Logs are **no good**
+for answering "what's my p99 latency this week?": you'd have to parse millions
+of lines, which is exactly what a histogram-type metric solves cheaply.
+
+The silent enemy is **cardinality**. A metric with a label per `user_id` or
+`request_id` spawns millions of time series and blows up Prometheus. Those
+high-cardinality identifiers belong in logs and traces, not in metrics. We'll
+cover that in detail next lesson.
+
+## Monitoring vs. observability
+
+**Monitoring** is watching questions you already know how to ask: "is the
+service up?", "did it cross 80% CPU?". **Observability** is being able to answer
+questions you didn't anticipate —"why do *only* southern-region users, *only* in
+checkout, see timeouts?"— without shipping new code. Monitoring prepares
+dashboards; observability lets you improvise queries when the incident doesn't
+look like any previous one.
+
+## How they connect: the correlation id
+
+The three signals become far more useful when they share a thread. If every
+incoming request gets a `trace_id` and that id rides along in the logs of every
+service it touches and in the trace's spans, then you jump from "I saw an error
+on the dashboard" → "here's the full trace" → "here's the log with the exact
+stack trace" in seconds. Without that thread you have three piles of data that
+don't talk to each other. We go deep on correlation ids in the logs lesson.
+
+## The honest truth about tracing for a solo operator
+
+Logs and metrics give you 90% of the value for little effort: prom-client
+exposes metrics in minutes, and your services already write logs. Distributed
+**tracing** (OpenTelemetry) is real and powerful, but adopting it costs:
+instrumenting every service, running a collector, paying to store spans. For one
+person operating dozens of services, don't start there. Adopt tracing **the day
+cross-service latency questions start to genuinely hurt** —when "which service
+in the chain is slow?" costs you an afternoon of guessing. That day OpenTelemetry
+is worth the cost; before it, it's over-engineering.
+
+In the next lessons we get concrete: we instrument metrics with Prometheus and
+Grafana, define alerts and SLOs, and get logs into shape.

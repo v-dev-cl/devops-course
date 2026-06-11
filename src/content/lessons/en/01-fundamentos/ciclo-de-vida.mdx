@@ -1,0 +1,73 @@
+---
+title: The Lifecycle of a Change
+description: The eight stages a change travels from idea to production and how to monitor it.
+objectives:
+  - Name and order the eight stages of the delivery lifecycle
+  - Map each stage to a concrete tool in your stack
+  - Distinguish "release" from "deploy" and explain what promoting between environments means
+minutes: 12
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Every software change travels the same path, whether you make it explicit or
+not. Once you name it, you can automate and measure it. The delivery lifecycle
+has eight stages: **plan → code → build → test → release → deploy → operate →
+monitor**. It is not a one-time linear process: it is a loop that repeats with
+every commit.
+
+## The eight stages, mapped to your stack
+
+The stages are abstract, but each one becomes concrete in a tool. For a typical
+stack of dozens of NestJS microservices on on-prem k3s they look like this:
+
+- **Plan**: you decide what to build. Tool: GitHub issues or a board.
+- **Code**: you write the code and version it. Tool: git, with `branch` and
+  `commit`.
+- **Build**: you package the service into an image. Tool: GitHub Actions
+  building the Docker image.
+- **Test**: you validate the change before releasing it. Tool: jest running in
+  the pipeline.
+- **Release**: you mark a version of the image as a production candidate and
+  publish it. Tool: push to GHCR.
+- **Deploy**: you put that version running in an environment. Tool: `skaffold
+  deploy` (currently manual from your laptop) or `kubectl apply`.
+- **Operate**: you keep the service alive. Tool: k3s rescheduling pods,
+  restarting the ones that fail.
+- **Monitor**: you observe how it behaves in production. Tool: **nothing yet** —
+  we fill this gap in module 7.
+
+Notice that last point: in many real stacks the loop is cut at `monitor`.
+Without monitoring you never close the cycle, because you have no production
+feedback to feed the next `plan`.
+
+## Release is not the same as deploy
+
+This is the most common confusion. **Release** is publishing a versioned
+artifact —your image `my-service` becomes available in GHCR for someone to use—.
+**Deploy** is putting that artifact running in a concrete environment. You can
+release an image and deploy it hours later, or deploy the same release into
+three different environments. Separating them lets you, for example, promote to
+production exactly the same image you already tested in staging, without
+rebuilding anything.
+
+## Environments and promotion
+
+An **environment** is a complete instance where your software runs with its own
+configuration: typically **dev**, **staging**, and **prod**. **Promoting** is
+moving the same release from one environment to the next, gaining confidence at
+each step: if the image survives staging, you promote that identical image to
+prod. The anti-pattern is rebuilding the image for each environment, because
+then what you test is not what you deploy.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Deploy the current state of your service to k3s with skaffold (the 'deploy' stage of the lifecycle)."
+  accept={[/^skaffold\s+deploy/]}
+  hints={["The stage is called 'deploy'.", "The skaffold subcommand to deploy is 'deploy'."]}
+  solution="skaffold deploy"
+/>
+
+In the next lesson we stop describing the cycle and start measuring it: the four
+DORA metrics that tell you whether your delivery is actually improving.

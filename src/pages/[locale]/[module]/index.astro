@@ -1,0 +1,40 @@
+---
+import { getCollection, type CollectionEntry } from 'astro:content';
+import Base from '@/layouts/Base.astro';
+import LessonList, { type LessonItem } from '@/components/LessonList';
+import Quiz from '@/components/Quiz';
+import { curriculum, type ModuleDef } from '@/data/curriculum';
+import { moduleQuizzes } from '@/data/questions/modules';
+import { LOCALES, t, type Locale } from '@/i18n/ui';
+
+type LessonEntry = CollectionEntry<'lessons'>;
+
+export function getStaticPaths() {
+  return LOCALES.flatMap((locale) =>
+    curriculum.map((mod) => ({ params: { locale, module: mod.id }, props: { mod } })),
+  );
+}
+
+interface Props { mod: ModuleDef }
+const { mod } = Astro.props as Props;
+const locale = Astro.params.locale as Locale;
+
+const entries = await getCollection('lessons', (e: LessonEntry) => e.id.startsWith(`${locale}/${mod.id}/`));
+const byId = new Map<string, LessonEntry>(entries.map((e: LessonEntry) => [e.id, e]));
+const lessons: LessonItem[] = mod.lessons.map((l) => {
+  const entry = byId.get(`${locale}/${mod.id}/${l.slug}`);
+  return {
+    slug: l.slug,
+    title: entry?.data.title ?? l.slug,
+    minutes: entry?.data.minutes ?? 0,
+    status: l.status,
+  };
+});
+const quiz = moduleQuizzes[mod.id];
+---
+<Base locale={locale} title={mod.title[locale]}>
+  <h1 class="text-2xl font-bold">{mod.title[locale]}</h1>
+  <p class="mb-6 mt-1 text-zinc-500">{mod.description[locale]}</p>
+  <LessonList client:load locale={locale} moduleId={mod.id} lessons={lessons} />
+  {quiz && <Quiz client:visible locale={locale} questions={quiz} title={t(locale, 'quiz.moduleTitle')} />}
+</Base>

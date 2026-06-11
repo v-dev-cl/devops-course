@@ -1,0 +1,142 @@
+---
+title: Shell de supervivencia
+description: Los comandos y la mecánica de pipes y redirección que necesitas para operar servicios desde una terminal.
+objectives:
+  - Encadenar comandos con pipes y filtrar salida con grep, awk y cut
+  - Redirigir stdout y stderr a archivos y entre descriptores (2>&1)
+  - Combinar find, xargs y sustitución de comandos para operaciones por lotes
+  - Inspeccionar y editar archivos de configuración de servicios sin un IDE
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Cuando un servicio se cae a las 3 AM no tienes tu IDE: tienes una sesión SSH y
+una terminal. La buena noticia es que el shell de Unix es una máquina de
+componer: comandos chicos que hacen una sola cosa, conectados entre sí, te
+dejan responder preguntas que ninguna herramienta gráfica resuelve tan rápido.
+Con decenas de servicios NestJS sobre k3s, esto no es teoría: es cómo encuentras *qué*
+se rompió antes de poder arreglarlo.
+
+## Los tres descriptores y el pipe
+
+Cada proceso nace con tres canales: **stdin** (0, la entrada), **stdout** (1, la
+salida normal) y **stderr** (2, los errores). El pipe `|` conecta el stdout de
+un comando al stdin del siguiente. Eso es todo el truco: armas una tubería por
+la que fluyen líneas de texto.
+
+```bash
+kubectl get pods -A | grep CrashLoopBackOff
+```
+
+`kubectl` lista todos los pods; `grep` deja pasar solo las líneas que contienen
+`CrashLoopBackOff`. En vez de leer 200 pods con los ojos, ves los tres que
+están reventados.
+
+## Filtrar y recortar: grep, cut, awk
+
+`grep` busca patrones. Sus flags valen oro: `-i` ignora mayúsculas, `-v`
+invierte (líneas que *no* matchean), `-c` cuenta, `-E` activa regex extendido.
+
+```bash
+journalctl -u sync-worker | grep -i error      # solo errores
+journalctl -u sync-worker | grep -vc DEBUG      # cuenta líneas que NO son DEBUG
+```
+
+`cut` y `awk` parten líneas en columnas. `cut -d' ' -f1` toma el primer campo
+separado por espacio; `awk` es un lenguaje completo pero el 90% del tiempo lo
+usas para imprimir columnas:
+
+```bash
+# de qué nodo es cada pod: columnas NAME y NODE
+kubectl get pods -A -o wide | awk '{print $2, $8}'
+
+# IPs únicas que pegaron al puerto 4000, ordenadas por frecuencia
+ss -tn | awk '{print $5}' | cut -d: -f1 | sort | uniq -c | sort -rn
+```
+
+`sort | uniq -c` es el contador universal del shell: ordena, agrupa duplicados
+y cuenta. Lo vas a usar para todo, desde IPs hasta códigos de error.
+
+## Redirección: stdout, stderr y 2>&1
+
+El pipe conecta procesos; la redirección los conecta a **archivos**. `>` manda
+stdout a un archivo (lo sobrescribe), `>>` agrega al final, `2>` redirige
+stderr.
+
+```bash
+node server.js > server.log         # solo stdout al archivo; los errores siguen en pantalla
+node server.js 2> errors.log        # solo stderr al archivo
+```
+
+La combinación que tienes que memorizar es `2>&1`: "manda el descriptor 2
+adonde apunta el 1 ahora". Si juntas stdout a un archivo y *después* rediriges
+stderr al mismo destino, capturas todo el output del proceso en un solo log:
+
+```bash
+node server.js > server.log 2>&1 &
+```
+
+El orden importa: `2>&1 > log` no hace lo que crees, porque `2>&1` se evalúa
+*antes* de que `>` cambie el destino de stdout. Regla práctica: el archivo
+primero, `2>&1` al final. El `&` final manda el proceso al background.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Cuenta cuántas líneas con la palabra ERROR hay en el archivo app.log."
+  accept={['grep -c ERROR app.log', /^grep ERROR app\.log \| wc -l$/]}
+  hints={["grep tiene un flag que cuenta coincidencias en vez de imprimirlas.", "El flag es -c, o puedes contar líneas con | wc -l."]}
+  solution="grep -c ERROR app.log"
+/>
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Arranca 'node server.js' en background y manda TODO su output (stdout y stderr) al archivo server.log."
+  accept={[/^node server\.js > server\.log 2>&1( &)?$/]}
+  hints={["Redirige stdout con > y después junta stderr con 2>&1.", "El archivo primero, 2>&1 al final: node server.js > server.log 2>&1"]}
+  solution="node server.js > server.log 2>&1 &"
+/>
+
+## find, xargs y sustitución de comandos
+
+`find` busca archivos por nombre, fecha o tamaño; `xargs` toma esa lista y la
+pasa como argumentos a otro comando. Juntos hacen operaciones por lotes:
+
+```bash
+# borra logs rotados de más de 7 días
+find /var/log/services -name '*.log.*' -mtime +7 -print0 | xargs -0 rm -f
+```
+
+Nota el `-print0 | xargs -0`: separa los nombres con un byte nulo en vez de
+espacios, así un archivo con espacios en el nombre no se parte en dos
+argumentos. Es la versión segura del patrón.
+
+La **sustitución de comandos** `$(...)` reemplaza la expresión por su salida.
+Sirve para alimentar un comando con el resultado de otro. Ojo: el nombre de un
+pod trae sufijos de replicaset y hash (`sync-worker-7d9f8b9c4-xq2lp`), así que no
+puedes pasárselo a `deployment/...`. Lo que sí sirve es leer el deployment desde
+una *label* del pod que está crasheando:
+
+```bash
+# reinicia el deployment dueño del pod que está crasheando
+pod=$(kubectl get pods -n prod | grep CrashLoop | awk '{print $1}' | head -1)
+kubectl rollout restart deployment/$(kubectl get pod "$pod" -n prod -o jsonpath='{.metadata.labels.app}')
+```
+
+## Editar configs sin IDE
+
+En un servidor pelado tienes `nano` (simple: `Ctrl+O` guarda, `Ctrl+X` sale) o
+`vim` (`i` para insertar, `Esc` luego `:wq` para guardar y salir). Para cambios
+puntuales sin abrir un editor, `sed -i` edita en sitio:
+
+```bash
+sed -i 's/LOG_LEVEL=debug/LOG_LEVEL=info/' /etc/services/worker.env
+```
+
+Antes de tocar un archivo crítico, hazte una copia: `cp worker.env worker.env.bak`.
+Cuesta dos segundos y te salva de un rollback a mano.
+
+En la próxima lección vemos qué pasa *detrás* de esos procesos: PIDs, señales y
+cómo systemd los mantiene vivos.

@@ -1,0 +1,125 @@
+---
+title: Kubernetes, a practical refresher
+description: An operator's refresher on the Deployment → ReplicaSet → Pod chain, Service types, ConfigMap/Secret via envFrom, and namespaces.
+objectives:
+  - Explain the Deployment → ReplicaSet → Pod ownership chain
+  - Distinguish Service types (ClusterIP, NodePort, LoadBalancer) from Ingress
+  - Consume configuration with envFrom and understand why pods don't restart when a ConfigMap changes
+  - Use namespaces to isolate environments in a single cluster
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+This module assumes you have touched Kubernetes, not that you *operate* it well.
+Before GitOps it pays to refresh the chain of objects that deploys your services and
+the spots where people stumble. The course example is dozens of NestJS microservices on an
+on-prem k3s, deployed today by hand with `skaffold deploy`.
+
+## The ownership chain: Deployment → ReplicaSet → Pod
+
+When you apply a `Deployment` you do not create pods directly. You create a chain:
+
+- The **Deployment** describes the desired state (which image, how many replicas)
+  and manages rollouts.
+- The Deployment creates a **ReplicaSet** per version of the template. The
+  ReplicaSet has one job: keep N identical copies alive.
+- The ReplicaSet creates the **Pods**, each with one or more containers.
+
+That *ownership* chain matters when debugging. If you delete a pod, its ReplicaSet
+recreates it immediately; to remove it for real, you scale the Deployment's replicas
+down or delete it. And when you change the image, the Deployment creates a **new**
+ReplicaSet and shifts pods from the old one to the new one: that is the rolling
+update. This is why `kubectl get rs` sometimes shows several ReplicaSets for the same
+service: the current one with N pods and the previous ones at zero.
+
+```bash
+kubectl get deploy,rs,pods -l app=your-service
+```
+
+## Service types
+
+A **Service** is a stable IP and DNS name in front of a set of pods that come and go.
+It selects pods by labels and spreads traffic across them. There are three types:
+
+- **ClusterIP** (the default): an internal cluster IP. Reachable only from inside.
+  It is what you use for one microservice to talk to another.
+- **NodePort**: opens a port on every node. Useful for testing, crude for prod.
+- **LoadBalancer**: requests an external load balancer from the cloud provider. On an
+  on-prem k3s there is no cloud LB; k3s ships **klipper-lb** (ServiceLB) that emulates
+  it.
+
+Watch out for the classic confusion: a **Service is not an Ingress**. The Service
+gives L4 connectivity (IP:port) inside the cluster. The **Ingress** is L7: it routes
+HTTP by host/path to several Services, and is where TLS lives. To expose dozens of services
+under one domain you put an Ingress in front, not 35 LoadBalancers.
+
+## ConfigMap and Secret via envFrom
+
+Configuration is not hardcoded into the image. It goes in a **ConfigMap**
+(non-sensitive) or a **Secret** (sensitive) and is injected into the container. The
+cleanest way to inject *all* the keys at once as environment variables is `envFrom`:
+
+```yaml
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/v-dev-cl/sample-app:sha-a1b2c3d
+          envFrom:
+            - configMapRef: { name: sample-app-config }
+            - secretRef: { name: sample-app-secrets }
+```
+
+Each key/value pair from the ConfigMap and the Secret shows up as an environment
+variable inside the container.
+
+Here is the stumble almost everyone hits: **if you edit a ConfigMap consumed via
+`envFrom`, the pods already running do NOT restart**. Environment variables are
+injected once, at container startup. You change the ConfigMap, but the pods keep the
+old value until you restart them by hand (`kubectl rollout restart deploy/...`). It
+is a classic source of "I updated the config and nothing happened".
+
+The cure is not remembering to restart: it is using Kustomize **hash-suffixed
+generators** (`configMapGenerator`/`secretGenerator`). Whenever the content changes,
+the ConfigMap's name changes (`sample-app-config-<hash>`), the Deployment points at
+the new name, and that **does** trigger a rollout. We will cover this in detail in
+the Kustomize lesson.
+
+## Namespaces
+
+A **namespace** is a logical partition of the cluster. It is used to isolate
+environments (`sample-dev`, `sample-prod`) or teams in the same k3s, with their own
+names, quotas, and RBAC policies. Object names are unique *within* a namespace, not
+globally: you can have a Service `sample-app` in `sample-dev` and another in
+`sample-prod` without a clash. In GitOps, each overlay usually pins its own
+namespace.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="List all pods in all namespaces to see what runs across the whole cluster."
+  accept={['kubectl get pods -A', 'kubectl get pods --all-namespaces', 'kubectl get po -A']}
+  hints={["The subcommand is 'get pods'.", "The flag for all namespaces is -A (or --all-namespaces)."]}
+  solution="kubectl get pods -A"
+/>
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Scale the Deployment named app to 5 replicas."
+  accept={[/^kubectl scale (deployment|deploy)(\.apps)?(\/| )app --replicas[= ]5$/]}
+  hints={["The subcommand is 'scale'.", "You need the type (deployment), the name (app), and --replicas=5."]}
+  solution="kubectl scale deployment app --replicas=5"
+/>
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="A pod is stuck in Pending. Describe the pod (its name is app-7d4c-x2k9) to see the events and understand why it was not scheduled."
+  accept={[/^kubectl describe pod .+$/]}
+  hints={["The subcommand is 'describe pod'.", "Pass it the pod name; the Events section explains the Pending."]}
+  solution="kubectl describe pod app-7d4c-x2k9"
+/>
+
+With the object chain fresh, the next lesson reviews what a manifest must satisfy to
+be a good citizen of a shared k3s.

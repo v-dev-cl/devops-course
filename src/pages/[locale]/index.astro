@@ -1,0 +1,18 @@
+---
+import Base from '@/layouts/Base.astro';
+import ProgressDashboard from '@/components/ProgressDashboard';
+import { LOCALES, t, url, type Locale } from '@/i18n/ui';
+
+export function getStaticPaths() {
+  return LOCALES.map((locale) => ({ params: { locale } }));
+}
+const locale = Astro.params.locale as Locale;
+---
+<Base locale={locale} title={t(locale, 'nav.home')}>
+  <h1 class="text-2xl font-bold">{t(locale, 'site.title')}</h1>
+  <p class="mt-1 text-zinc-500">{t(locale, 'site.tagline')}</p>
+  <p class="mt-4">
+    <a href={url(locale, 'assessment')} class="underline">{t(locale, 'nav.assessment')} →</a>
+  </p>
+  <ProgressDashboard client:load locale={locale} />
+</Base>

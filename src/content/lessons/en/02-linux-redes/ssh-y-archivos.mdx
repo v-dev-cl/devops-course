@@ -1,0 +1,157 @@
+---
+title: SSH & Remote File Handling
+description: Secure server access with SSH and file transfer for operating the fleet.
+objectives:
+  - Set up SSH keys and ~/.ssh/config with host aliases
+  - Use scp and rsync to move files idempotently
+  - Apply correct permissions to private keys and sensitive files
+  - Triage disk usage with df, du, and ncdu, and pack with tar
+  - Leverage tunnels and port-forwarding to reach internal services
+minutes: 16
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Operating a fleet means logging into many servers and moving files between them
+without slipping up. SSH is the front door; rsync is how you move data without
+duplicating work; and permissions are what keep you from leaking a private key.
+This lesson is the toolbox for touching remote machines with confidence.
+
+## SSH keys and the agent
+
+SSH authenticates with a key pair: a **private** key (stays on your machine,
+never leaves) and a **public** key (you copy it to the server). You generate the
+pair once:
+
+```bash
+ssh-keygen -t ed25519 -C "victor@laptop"   # creates ~/.ssh/id_ed25519[.pub]
+ssh-copy-id root@203.0.113.10               # installs the public key on the server
+```
+
+The **ssh-agent** keeps your key unlocked in memory so you don't type the
+passphrase on every connection:
+
+```bash
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+```
+
+## ~/.ssh/config: host aliases
+
+Typing `ssh root@203.0.113.10 -i ~/.ssh/id_ed25519 -p 2222` every time is
+absurd. The `~/.ssh/config` file lets you give each server an alias:
+
+```
+Host web-prod
+    HostName 203.0.113.10
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+
+Host db-prod
+    HostName 198.51.100.5
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+Now `ssh web-prod` and `ssh db-prod` resolve to the full configuration. Those
+aliases also work with `scp` and `rsync` — you define the host once and use it
+across every tool. It's the difference between remembering IPs and remembering
+names.
+
+## Tunnels: reaching internal services
+
+Many services listen only on the server's loopback for safety: production Mongo
+accepts connections on `localhost:27017`, but the port isn't exposed to the
+internet. An **SSH tunnel** with local port-forwarding opens that service on
+your machine as if it were local:
+
+```bash
+ssh -L 27017:localhost:27017 db-prod    # map your :27017 to the host's :27017
+```
+
+Now `mongosh localhost:27017` from your laptop hits the remote Mongo through the
+tunnel. The `-L` means *local*: your port, first. To leave the tunnel running in
+the background without opening a shell, use `-fN`: `-f` backgrounds it, `-N`
+says "don't run any command, just forward":
+
+```bash
+ssh -fN -L 27017:localhost:27017 db-prod
+```
+
+Rule for which to use: for services *inside* a cluster, use
+`kubectl port-forward`; for host-level services (Mongo, Postgres, an internal
+panel on a VM) the SSH tunnel is the tool.
+
+## Permissions: why SSH rejects your key
+
+Linux models permissions in three triplets —owner, group, others— each with
+read (4), write (2), execute (1). `chmod 600` means "owner reads and writes,
+nobody else touches". SSH is **strict on purpose**: if your private key is
+readable by others, it refuses to use it.
+
+```bash
+chmod 700 ~/.ssh           # only you enter the directory
+chmod 600 ~/.ssh/id_ed25519       # private key: only you read it
+chmod 644 ~/.ssh/id_ed25519.pub   # public: others can read it
+chown -R victor:victor ~/.ssh     # you own everything
+```
+
+`chmod` changes *what can be done*; `chown` changes *who owns it*. If you copy a
+key to a server and SSH still asks for a password, it's almost always a
+too-open permission on `~/.ssh` or on the key file.
+
+## scp and rsync
+
+`scp` copies files over SSH, simple and direct. `rsync` is smarter: it **only
+transfers the differences**, so running it twice doesn't recopy what's already
+identical — it's idempotent, which is why it's the preferred tool for syncing
+directories or resuming interrupted transfers.
+
+```bash
+scp dump.sql db-prod:/tmp/                 # copy a single file
+rsync -avz ./dist/ web-prod:/opt/app/dist/     # sync a directory
+```
+
+The `rsync -avz` flags: `-a` (archive) preserves permissions, owners, and
+recursion; `-v` verbose; `-z` compresses in transit. The slash detail: `./dist/`
+with a trailing slash copies the *contents*; `./dist` without a slash copies the
+*folder into the destination*. Add `--dry-run` to see what it would do without
+touching anything — always use it the first time.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Sync the local directory ./dist/ to /opt/app/dist/ on the host web-prod using rsync in archive mode and compressed."
+  accept={[/^rsync -[a-z]*a[a-z]* .+ \w+@?[\w.-]*:.+$/, /^rsync -[a-z]+ .+ [\w.-]+:.+$/]}
+  hints={["rsync with flags -avz: archive, verbose, compressed.", "rsync -avz ./dist/ web-prod:/opt/app/dist/"]}
+  solution="rsync -avz ./dist/ web-prod:/opt/app/dist/"
+/>
+
+## tar: packing to move
+
+Before transferring many files, it's worth packing them into a single
+`.tar.gz`. The mnemonic: **c**reate, e**x**tract, **t**ape (list).
+
+```bash
+tar czf logs.tar.gz /var/log/services/   # c create, z gzip, f file
+tar xzf logs.tar.gz                       # x extract
+tar tzf logs.tar.gz                       # t list contents without extracting
+```
+
+## Disk triage: df, du, ncdu
+
+A full disk takes down services in weird ways (logs that won't write, Mongo
+that won't start). Three zoom levels:
+
+```bash
+df -h                  # usage per filesystem: which partition is at 100%?
+du -sh /var/log/*      # size per folder inside the suspect one
+ncdu /var             # interactive explorer: navigate and see what's heavy
+```
+
+The routine: `df -h` tells you *which partition* blew up, `du -sh` tells you
+*which folder* inside, and `ncdu` lets you navigate down to the guilty file.
+It's almost always old logs or a forgotten Docker volume.
+
+With this you close the Linux and networking fundamentals. In the Docker module
+we start packaging your services so they move the same on any machine.

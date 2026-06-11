@@ -1,0 +1,126 @@
+---
+title: Kubernetes, repaso práctico
+description: Repaso con lente de operador de la cadena Deployment → ReplicaSet → Pod, tipos de Service, ConfigMap/Secret vía envFrom y namespaces.
+objectives:
+  - Explicar la cadena de propiedad Deployment → ReplicaSet → Pod
+  - Distinguir los tipos de Service (ClusterIP, NodePort, LoadBalancer) e Ingress
+  - Consumir configuración con envFrom y entender por qué los pods no reinician al cambiar un ConfigMap
+  - Usar namespaces para aislar entornos en un mismo cluster
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Este módulo asume que ya tocaste Kubernetes, pero no que lo *operas* bien. Antes de
+GitOps conviene refrescar la cadena de objetos que despliega tus servicios y los
+puntos donde la gente se tropieza. El ejemplo del curso son decenas de microservicios
+NestJS sobre un k3s on-premise, hoy desplegados a mano con `skaffold deploy`.
+
+## La cadena de propiedad: Deployment → ReplicaSet → Pod
+
+Cuando aplicas un `Deployment`, no creas pods directamente. Creas una cadena:
+
+- El **Deployment** describe el estado deseado (qué imagen, cuántas réplicas) y
+  gestiona los rollouts.
+- El Deployment crea un **ReplicaSet** por cada versión del template. El ReplicaSet
+  tiene un solo trabajo: mantener vivas N copias idénticas.
+- El ReplicaSet crea los **Pods**, cada uno con uno o más contenedores.
+
+Esa cadena de *propiedad* (ownership) importa al depurar. Si borras un pod, su
+ReplicaSet lo recrea de inmediato; para sacarlo de verdad, bajas las réplicas del
+Deployment o lo borras. Y cuando cambias la imagen, el Deployment crea un
+ReplicaSet **nuevo** y va trasladando pods del viejo al nuevo: ese es el rolling
+update. Por eso `kubectl get rs` a veces muestra varios ReplicaSets de un mismo
+servicio: el actual con N pods y los anteriores en cero.
+
+```bash
+kubectl get deploy,rs,pods -l app=tu-servicio
+```
+
+## Tipos de Service
+
+Un **Service** es una IP y un DNS estables frente a un conjunto de pods que van y
+vienen. Selecciona pods por labels y reparte tráfico entre ellos. Hay tres tipos:
+
+- **ClusterIP** (el default): IP interna del cluster. Solo accesible desde adentro.
+  Es lo que usas para que un microservicio le hable a otro.
+- **NodePort**: abre un puerto en cada nodo. Útil para pruebas, tosco para prod.
+- **LoadBalancer**: pide un balanceador externo al proveedor cloud. En un k3s
+  on-premise no hay cloud LB; k3s trae **klipper-lb** (ServiceLB) que lo emula.
+
+Ojo con la confusión clásica: un **Service no es un Ingress**. El Service da
+conectividad L4 (IP:puerto) dentro del cluster. El **Ingress** es L7: enruta HTTP
+por host/path hacia varios Services, y es donde vive el TLS. Para exponer 35
+servicios bajo un dominio, pones un Ingress al frente, no 35 LoadBalancers.
+
+## ConfigMap y Secret vía envFrom
+
+La configuración no va hardcodeada en la imagen. Va en un **ConfigMap** (no
+sensible) o un **Secret** (sensible), y se inyecta al contenedor. La forma más
+limpia de inyectar *todas* las claves de golpe como variables de entorno es
+`envFrom`:
+
+```yaml
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/v-dev-cl/sample-app:sha-a1b2c3d
+          envFrom:
+            - configMapRef: { name: sample-app-config }
+            - secretRef: { name: sample-app-secrets }
+```
+
+Cada par clave/valor del ConfigMap y del Secret aparece como una variable de
+entorno dentro del contenedor.
+
+Acá está el tropiezo que casi todos sufren: **si editas un ConfigMap que se
+consume por `envFrom`, los pods que ya corren NO se reinician**. Las variables de
+entorno se inyectan una sola vez, al arrancar el contenedor. Cambias el ConfigMap,
+pero los pods siguen con el valor viejo hasta que los reinicies a mano
+(`kubectl rollout restart deploy/...`). Es una fuente típica de "actualicé la
+config y no pasó nada".
+
+La cura no es acordarse de reiniciar: es usar **generadores con sufijo de hash**
+de Kustomize (`configMapGenerator`/`secretGenerator`). Cada vez que cambia el
+contenido, el nombre del ConfigMap cambia (`sample-app-config-<hash>`), el
+Deployment apunta al nombre nuevo, y eso **sí** dispara un rollout. Lo veremos en
+detalle en la lección de Kustomize.
+
+## Namespaces
+
+Un **namespace** es una partición lógica del cluster. Sirve para aislar entornos
+(`sample-dev`, `sample-prod`) o equipos en un mismo k3s, con nombres, cuotas y
+políticas RBAC propios. Los nombres de objetos son únicos *dentro* de un namespace,
+no globalmente: puedes tener un Service `sample-app` en `sample-dev` y otro en
+`sample-prod` sin que choquen. En GitOps, cada overlay suele fijar su propio
+namespace.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Lista todos los pods de todos los namespaces para ver qué corre en el cluster completo."
+  accept={['kubectl get pods -A', 'kubectl get pods --all-namespaces', 'kubectl get po -A']}
+  hints={["El subcomando es 'get pods'.", "El flag para todos los namespaces es -A (o --all-namespaces)."]}
+  solution="kubectl get pods -A"
+/>
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Escala el Deployment llamado app a 5 réplicas."
+  accept={[/^kubectl scale (deployment|deploy)(\.apps)?(\/| )app --replicas[= ]5$/]}
+  hints={["El subcomando es 'scale'.", "Necesitas el tipo (deployment), el nombre (app) y --replicas=5."]}
+  solution="kubectl scale deployment app --replicas=5"
+/>
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Un pod quedó en Pending. Describe el pod (su nombre es app-7d4c-x2k9) para ver los eventos y entender por qué no se programó."
+  accept={[/^kubectl describe pod .+$/]}
+  hints={["El subcomando es 'describe pod'.", "Pásale el nombre del pod; la sección Events explica el Pending."]}
+  solution="kubectl describe pod app-7d4c-x2k9"
+/>
+
+Con la cadena de objetos fresca, en la próxima lección revisamos qué debe cumplir
+un manifiesto para ser un buen ciudadano de un k3s compartido.

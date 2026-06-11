@@ -1,0 +1,84 @@
+---
+title: Panorama de AWS
+description: El mapa mental de las regiones, AZs y los servicios core de AWS, y cómo encaja con tu on-premise.
+objectives:
+  - Ubicar regiones, zonas de disponibilidad y el modelo de responsabilidad compartida
+  - Reconocer los servicios core (cómputo, red, almacenamiento, IAM) y para qué sirven
+  - Razonar sobre un setup híbrido cloud + on-premise para el contexto Chile
+  - Estimar a grandes rasgos los ejes de costo de un servicio en AWS
+minutes: 16
+---
+
+Tu stack actual —decenas de servicios NestJS sobre k3s en tu propio VPS— es **barato y tuyo**.
+Parte de esa premisa: AWS no viene a reemplazarlo, sino a que adoptes de forma
+**selectiva** los servicios donde la carga de operar duele. Un lift-and-shift
+(mover todo tal cual) suele salir más caro y más complejo que tu setup. La
+pregunta correcta no es "¿me voy a la nube?", sino "¿qué pieza me conviene que
+opere otro por mí?".
+
+## El mapa: cuenta, región, AZ
+
+Tres niveles ordenan todo en AWS:
+
+- **Cuenta** — tu frontera de facturación y de aislamiento. Todo recurso vive en
+  una cuenta y se factura ahí. Los equipos serios usan varias cuentas (dev, prod).
+- **Región** — un conjunto de datacenters en una zona geográfica, con su código:
+  `us-east-1` (Virginia), `sa-east-1` (São Paulo). Eliges región por latencia,
+  por costo (los precios varían entre regiones) y por residencia de datos.
+- **Zona de disponibilidad (AZ)** — dentro de una región hay varias AZs, que son
+  datacenters físicamente separados pero conectados con baja latencia.
+  Distribuir en varias AZs es lo que te da alta disponibilidad si una cae.
+
+## Responsabilidad compartida
+
+AWS opera bajo el modelo de **responsabilidad compartida**: AWS responde por la
+seguridad **de** la nube (hardware, datacenters, hipervisor) y tú por la
+seguridad **en** la nube (tus datos, tus permisos IAM, parchar tus instancias
+EC2). Un S3 mal configurado y público es culpa tuya, no de AWS.
+
+## El contexto Chile: latencia real
+
+No hay región AWS completa en Chile. Lo más cercano es **`sa-east-1` (São Paulo)**,
+con un RTT del orden de ~40–60 ms desde Santiago. Para comparar, `us-east-1`
+(Virginia) ronda los ~150 ms. Existe además la **Local Zone de Santiago (`scl1`,
+cuyo padre es `us-east-1`)**: una extensión de cómputo y red para servir baja
+latencia local, pero con un catálogo de servicios reducido —no esperes que esté
+todo lo de una región completa.
+
+Para tu caso esto importa: si una pieza es **chatty** (muchas idas y vueltas) con
+tu k3s en tu VPS europeo (Alemania), ponerla en `sa-east-1` no arregla la latencia hacia
+tu cluster. Lo que migres conviene que sea autocontenido o tolerante a latencia.
+
+## Los ~6 servicios para partir
+
+No necesitas el catálogo de 200+ servicios. Con estos seis te orientas:
+
+- **IAM** — identidad y permisos. La base de seguridad de todo (próxima lección).
+- **VPC** — tu red privada en AWS: subnets, ruteo, firewalls.
+- **EC2** — máquinas virtuales, el cómputo crudo.
+- **S3** — almacenamiento de objetos (imágenes de productos, backups).
+- **RDS** — bases de datos gestionadas (Postgres, MySQL).
+- **Secrets Manager** — secretos gestionados (el deep-dive del módulo, con ESO).
+
+## CapEx/ops vs OpEx/managed, honesto
+
+Tu VPS es **CapEx-ish**: pagas poco fijo, pero **tú operas** (parches, backups,
+HA, monitoreo). AWS es **OpEx**: pagas por uso, más caro por unidad, pero el
+proveedor opera la pieza gestionada. El trade no es "barato vs caro": es **dinero
+vs tiempo de operación**. Un RDS Multi-AZ cuesta varias veces lo que un Postgres
+en una VM, pero te saca de encima el failover y los backups. Esa cuenta solo te
+cierra donde operar duele de verdad.
+
+## Free tier y la trampa del egress
+
+El **free tier** tiene tres sabores: gratis-siempre (con límites), 12 meses gratis
+(cuenta nueva) y pruebas puntuales. Sirve para aprender, no para producción.
+
+La trampa clásica de costo es el **egress**: AWS te cobra el tráfico que **sale**
+hacia internet (entrar suele ser gratis). Un patrón chatty entre tu k3s y un S3 o
+RDS en AWS puede generar una factura sorpresa de transferencia. Antes de mover
+algo, estima: cuántos GB salen al mes y a qué precio por GB en esa región. El
+cómputo se predice fácil; el egress es lo que infla las facturas que no esperabas.
+
+En la próxima lección vemos las dos bases sobre las que se construye todo en AWS:
+IAM (quién puede hacer qué) y VPC (la red).

@@ -1,0 +1,95 @@
+---
+title: Data — S3 & RDS
+description: Object storage with S3 and managed databases with RDS, durability, classes, and trade-offs.
+objectives:
+  - Explain S3 durability and choose among its storage classes by cost/access
+  - Tell object storage (S3) apart from block and file storage
+  - Evaluate the trade-off of a managed database (RDS) versus self-hosted
+  - Recognize backups, multi-AZ, and read replicas as operational decisions
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Your data is the one truly irreplaceable thing in your stack. AWS has two services
+that are likely your first adoption candidates: **S3** for files and **RDS** for
+relational databases.
+
+## S3: object storage
+
+S3 stores **objects** (a file + metadata) in **buckets**. It's not a disk (that's
+**block storage**, EBS) nor a shared filesystem (that's **file storage**, EFS):
+it's an HTTP API to upload and download blobs. Ideal for **product images** and
+**backups**: things you write once and read many times.
+
+Its headline number is **11 nines of durability (99.999999999%)**: AWS replicates
+each object across multiple AZs. Losing an object is statistically almost
+impossible. Note: durability (not losing the data) is not the same as availability
+(always being able to access it).
+
+### Storage classes
+
+You pick a class by access frequency, balancing storage cost vs access cost:
+
+- **S3 Standard** — frequent access (product images served daily).
+- **S3 Standard-IA** (Infrequent Access) — cheaper to store, pricier to read; for
+  data you touch rarely.
+- **S3 Glacier / Deep Archive** — cold archiving, dirt cheap to store but with
+  minutes-to-hours wait to retrieve; ideal for old backups you almost never read
+  but must retain.
+
+### Presigned URLs and lifecycle rules
+
+To let a user upload or download an object **without** giving them AWS
+credentials, you generate a **presigned URL**: a temporary, signed link that grants
+scoped permission to that object for a while. Your backend signs it; the client
+uploads straight to S3 without the file passing through your server.
+
+**Lifecycle rules** automate the object's life: "objects under this prefix, move
+them to Glacier after 30 days and delete them after 365." For your backups, that's
+automatic retention with no cron to maintain.
+
+## RDS vs your self-hosted Mongo/Postgres
+
+RDS is a **managed relational database** (Postgres, MySQL, etc.): AWS handles
+patches, automated backups, Multi-AZ failover, and read replicas. You're left to
+operate your schema and your queries.
+
+Your reality is **self-managed Mongo on your VPS**. Weigh this honestly:
+
+- RDS is **relational**; Mongo is document-based. The managed equivalent of Mongo
+  on AWS is **DocumentDB** (compatible with the Mongo API, not real Mongo).
+- **What you'd buy**: backups and failover without operating them, Multi-AZ (a
+  synchronous replica in another AZ with automatic failover), and read replicas to
+  scale heavy reads.
+- **What you would NOT buy**: it costs **more**, there's less fine-grained control
+  (you don't get into the host), and DocumentDB doesn't cover 100% of Mongo's
+  features. If your Mongo runs fine and you have decent backup discipline,
+  RDS/DocumentDB solves a pain you may not have.
+
+## Backup/restore discipline
+
+A backup you've never restored isn't a backup, it's a hope. RDS automates
+snapshots, but you still must **test the restore** periodically. If you stay on
+self-hosted Mongo, that discipline (dump, off-site copy, test restore) is on you
+—it's exactly the burden a managed database takes off your plate.
+
+## The egress trap, again
+
+If a **chatty** app (many small queries or large, frequent reads) ends up **crossing
+the internet** between your k3s on your VPS and an RDS/S3 in AWS, egress can get very
+expensive. The rule: **data and compute live close together**. If you move the
+database to AWS, consider moving the service that hits it most too, or the
+operational savings get eaten by transfer.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="List the objects in the product images bucket. Use the AWS CLI on the bucket 'shop-product-images'."
+  accept={[/^aws s3 ls s3:\/\/shop-product-images$/, /^aws s3 ls s3:\/\/shop-product-images\/$/]}
+  hints={["It's aws s3 ls followed by the bucket's s3:// URI.", "aws s3 ls s3://shop-product-images"]}
+  solution="aws s3 ls s3://shop-product-images"
+/>
+
+With compute and data covered, we close the module with the deep-dive the course
+promised: ESO against AWS Secrets Manager, for real.

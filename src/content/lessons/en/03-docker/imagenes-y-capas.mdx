@@ -1,0 +1,101 @@
+---
+title: Images and Layers
+description: What separates an image from a container and how the layer cache makes your builds fast or slow.
+objectives:
+  - Distinguish an image (immutable template) from a container (running instance)
+  - Explain how Docker builds an image in layers and when it reuses the cache
+  - Order Dockerfile instructions to maximize cache hits
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+An **image** is an immutable template: a frozen filesystem plus the metadata to
+start it. A **container** is a running instance of that image, with a writable
+layer on top. An image is the class; a container is the object. From a single
+image `ghcr.io/v-dev-cl/worker:master` you can start ten identical containers,
+and when one dies, the image stays intact to start the next one.
+
+## Layers: an image is a stack
+
+Docker builds the image as a **stack of layers**, one per Dockerfile instruction
+that modifies the filesystem (`FROM`, `COPY`, `RUN`, `ADD`). Each layer stores
+only the diff against the previous one. Layers are read-only and shared across
+images: if two services start from `node:24-alpine`, that base layer is pulled
+and stored on disk only once.
+
+This matters for two reasons: **size** (shared layers are not duplicated) and
+the **layer cache**, which decides how fast your build is.
+
+## The layer cache and why order matters
+
+When you rebuild an image, Docker walks the Dockerfile top to bottom and, for
+each instruction, asks: *did anything change since the previous build?* If
+nothing changed, it reuses the cached layer and moves on. **As soon as one layer
+is invalidated, every layer below it is rebuilt**, whether it changed or not.
+The cache is a streak that breaks at the first change.
+
+What invalidates a layer? For `RUN`, a change in the command text. For `COPY`
+and `ADD`, a change in the content of the copied files. Here is the classic trap
+in a NestJS service:
+
+```dockerfile
+# BAD: any code change invalidates the dependency install
+FROM node:24-alpine
+RUN corepack enable
+WORKDIR /app
+COPY . .
+RUN pnpm install
+RUN pnpm build
+```
+
+With this order, changing a single line of `src/main.ts` invalidates the
+`COPY . .`, and since `pnpm install` comes after, **all dependencies are
+reinstalled on every build**, even though `package.json` did not change. In a
+real service that is minutes lost on every push.
+
+The rule: **copy what changes rarely first, what changes often last.**
+Dependencies change rarely; the code changes on every commit. So:
+
+```dockerfile
+# GOOD: deps are cached until package.json or the lockfile changes
+FROM node:24-alpine
+RUN corepack enable
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+```
+
+Now `pnpm install` only reruns when `package.json` or `pnpm-lock.yaml` changes.
+Editing `src/` invalidates only the final `COPY . .` and `build` — the heavy
+dependency layer is reused from the cache.
+
+## Inspecting size and history
+
+To see how much each local image weighs, use `docker images`. To see which
+layers an image is made of and which instruction created each one, use
+`docker history`. The latter is key in the next step, when we attack the size of
+a NestJS image.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="List the images you have stored locally."
+  accept={['docker images', 'docker image ls']}
+  hints={["It is the command to list images, not containers.", "Two forms exist: the short 'docker images' and the modern 'docker image ls'."]}
+  solution="docker images"
+/>
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Show the layer history of the base image node:24-alpine."
+  accept={[/^docker (image )?history node:24-alpine$/]}
+  hints={["The subcommand to view layers is called 'history'.", "It ends with the image name: node:24-alpine"]}
+  solution="docker history node:24-alpine"
+/>
+
+In the next lesson we use all of this to transform a naive 1.2 GB NestJS image
+into a multi-stage one under 200 MB.

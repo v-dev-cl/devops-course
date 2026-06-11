@@ -1,0 +1,116 @@
+---
+title: Compose for Local Environments
+description: Bringing up app + mongo + redis locally with docker compose, healthchecks, and depends_on.
+objectives:
+  - Write a docker-compose.yml with app, mongo, and redis for local development
+  - Use healthchecks and depends_on with conditions to start in a safe order
+  - Recognize when compose is the wrong tool
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Your NestJS worker rarely runs alone: it needs Mongo to persist and Redis for
+queues or cache. Bringing each one up by hand is tedious and fragile. **Docker
+compose** describes that whole set in a declarative file and brings it up with
+one command, so anyone can clone the repo and have the local environment running
+in seconds.
+
+## A realistic compose: app + mongo + redis
+
+This is what a `docker-compose.yml` mirroring a NestJS worker with its
+dependencies looks like:
+
+```yaml
+services:
+  app:
+    build: .
+    env_file: .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # Consider mongo healthy only when it answers a ping
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongo-data:
+  redis-data:
+```
+
+There are three concepts worth unpacking: the startup order, the data that
+persists, and configuration via `.env`.
+
+## depends_on is not the same as a healthcheck
+
+`depends_on` on its own only guarantees **container startup order**, not that the
+service inside is ready. Mongo can take seconds to accept connections after its
+container "started"; if your app connects before that, it crashes. The fix is to
+combine it with `condition: service_healthy`, which makes compose wait until the
+service's **healthcheck** passes before starting the app. The healthcheck is the
+command that defines "being ready" (a ping to Mongo, a `redis-cli ping`).
+Without a healthcheck, `service_healthy` has nothing to wait for.
+
+## Named volumes: data that survives
+
+By default, when you delete a container you lose what it wrote. A **named
+volume** (`mongo-data`, `redis-data`) stores the data outside the container
+lifecycle: you can `down` and `up` a thousand times and your local database is
+still there. You declare them in the `volumes:` section and mount them at the
+path where the service writes (`/data/db` for Mongo).
+
+The `.env` keeps configuration out of the compose file: credentials, connection
+URLs, flags. `env_file: .env` injects them as environment variables into the
+app, just as in production you would with a Kubernetes Secret.
+
+## When compose is the wrong tool
+
+Compose is excellent for **local development and CI**. It is not a production
+orchestrator: it does not reschedule containers across nodes, does not scale
+horizontally with real load balancing, does not do rolling updates with health
+gates. That is what Kubernetes is for (k3s in your case), which we cover in
+module 5. Using compose in prod is the anti-pattern: it leaves you without
+self-healing or high availability.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Bring up all the compose services in the background (detached)."
+  accept={['docker compose up -d']}
+  hints={["The modern command is 'docker compose' (with a space).", "The flag to run in the background is -d (detached)."]}
+  solution="docker compose up -d"
+/>
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Follow the live logs of the 'app' service."
+  accept={[/^docker compose logs -f \w+$/]}
+  hints={["The subcommand is 'logs'.", "Use -f to follow and end with the service name: app"]}
+  solution="docker compose logs -f app"
+/>
+
+In the next lesson we leave local behind: we publish images to a registry and
+face the tag problem.

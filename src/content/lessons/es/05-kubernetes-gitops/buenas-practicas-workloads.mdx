@@ -1,0 +1,179 @@
+---
+title: Buenas prácticas de workloads
+description: El checklist que tus manifiestos deberían pasar — probes, requests/limits, securityContext, PodDisruptionBudgets y convenciones de labels.
+objectives:
+  - Distinguir liveness de readiness probe y qué causa la falla de cada una
+  - Configurar resource requests y limits y entender su efecto en un nodo k3s compartido
+  - Endurecer un Pod con securityContext (runAsNonRoot) y protegerlo con un PodDisruptionBudget
+  - Aplicar convenciones de labels recomendadas
+minutes: 18
+---
+
+Un manifiesto que "funciona" en tu máquina no es lo mismo que un manifiesto listo
+para un k3s compartido con otros 34 servicios. Esta lección es el checklist que tus
+Deployments deberían pasar antes de que un agente GitOps los aplique sin que tú
+mires. Al final dejamos un Deployment "bueno" completo que junta todo.
+
+## Liveness vs. readiness: dos preguntas distintas
+
+Las dos probes parecen iguales pero responden preguntas opuestas, y confundirlas
+causa incidentes:
+
+- La **liveness probe** pregunta: *¿este contenedor está vivo o se colgó?* Si
+  **falla**, kubelet **reinicia el contenedor**. Es para deadlocks y procesos
+  zombies. Una liveness mal configurada (timeout muy corto, endpoint pesado) hace
+  que k8s reinicie pods sanos en un loop — peor que no tenerla.
+- La **readiness probe** pregunta: *¿este pod puede recibir tráfico ahora?* Si
+  **falla**, el pod **se saca de los endpoints del Service** (deja de recibir
+  tráfico), pero **no** se reinicia. Es para arranques lentos o dependencias que
+  todavía no están listas (esperando a Mongo, calentando caché).
+
+La regla mental: **liveness reinicia, readiness saca de rotación.** Un servicio
+NestJS que tarda 8 segundos en conectar a Mongo necesita readiness para no recibir
+requests antes de estar listo; si pusieras eso como liveness, k8s lo reiniciaría
+para siempre porque nunca alcanza a arrancar dentro del umbral.
+
+```yaml
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+```
+
+## Requests y limits: el contrato con el scheduler
+
+Cada contenedor declara cuánta CPU y memoria pide y cuánta como máximo puede usar:
+
+- **requests**: lo que el contenedor *necesita garantizado*. El **scheduler** usa
+  el request para decidir en qué nodo cabe el pod. Si **no** pones requests, el
+  scheduler asume que el pod no necesita nada y lo encaja donde sea — y en un nodo
+  k3s compartido eso lleva a **sobrecompromiso**: metes más pods de los que el nodo
+  aguanta, y cuando todos piden RAM real, el kernel empieza a matar procesos (OOM).
+- **limits**: el techo. Si el contenedor pasa el **límite de memoria**, lo matan
+  con OOMKilled. Si pasa el **límite de CPU**, lo *estrangulan* (throttling): no lo
+  matan, solo le dan menos ciclos y se pone lento.
+
+```yaml
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+```
+
+En el k3s del curso, donde decenas de servicios comparten unos pocos nodos, **no poner
+requests es la causa #1 de inestabilidad**: un servicio con una fuga de memoria sin
+límite puede tumbar a los vecinos del nodo. Requests y limits convierten "espero
+que quepa" en un contrato que el scheduler respeta.
+
+## securityContext: corre como no-root
+
+Por defecto muchas imágenes corren como root *dentro* del contenedor. Si una
+vulnerabilidad permite escapar del contenedor, ese root puede volverse root en el
+nodo. El `securityContext` cierra esa puerta:
+
+```yaml
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+```
+
+`runAsNonRoot: true` hace que k8s **rechace arrancar el pod** si la imagen
+intentaría correr como root — te obliga a construir imágenes con `USER node`. Es
+defensa en profundidad: aunque alguien comprometa el proceso, no tiene root.
+
+## PodDisruptionBudget: protege la disponibilidad
+
+Un **PodDisruptionBudget** (PDB) le dice a k8s cuántos pods de un servicio pueden
+estar caídos *a la vez* durante interrupciones voluntarias (drenar un nodo para
+mantenimiento, un upgrade del cluster). Sin PDB, drenar un nodo puede tumbar todas
+las réplicas de un servicio de un golpe:
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sample-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: sample-app }
+```
+
+`minAvailable: 1` garantiza que siempre quede al menos un pod sirviendo mientras
+k8s reacomoda el resto. (Para que tenga sentido, el Deployment debe tener más de
+una réplica.)
+
+## Convenciones de labels
+
+Las labels no son decoración: los Services y los PDBs seleccionan pods por ellas, y
+las usas para filtrar (`kubectl get pods -l app=sample-app`). Kubernetes recomienda
+un conjunto de labels `app.kubernetes.io/*`:
+
+```yaml
+      labels:
+        app.kubernetes.io/name: sample-app
+        app.kubernetes.io/instance: sample-app-dev
+        app.kubernetes.io/version: "1.4.2"
+        app.kubernetes.io/managed-by: argocd
+```
+
+Lo importante es la **consistencia**: elige un esquema y úsalo en todos los
+servicios, para que filtrar, agrupar en dashboards y seleccionar con Services sea
+predecible en decenas de servicios.
+
+## El Deployment "bueno" completo
+
+Todo junto:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+  labels:
+    app.kubernetes.io/name: sample-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: sample-app }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sample-app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: app
+          image: ghcr.io/v-dev-cl/sample-app:sha-a1b2c3d
+          ports: [{ containerPort: 3000 }]
+          envFrom:
+            - configMapRef: { name: sample-app-config }
+            - secretRef: { name: sample-app-secrets }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+```
+
+Este es el estándar al que vamos a llevar los manifiestos antes de ponerlos bajo
+GitOps. En la próxima lección armamos la estructura de Kustomize que mantiene base
+y overlays sin duplicar este YAML 35 veces.

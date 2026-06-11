@@ -1,0 +1,78 @@
+---
+title: From CI to CD
+description: Push vs pull for Continuous Delivery, what drift is, and why pull/GitOps wins for an on-premise k3s behind NAT.
+objectives:
+  - Distinguish push CD from pull CD and their security trade-offs
+  - Explain what drift is and how a pull agent corrects it
+  - Justify why pull/GitOps wins for on-premise clusters behind NAT
+minutes: 12
+---
+
+So far your repo already says which exact image should run in each environment: SHA
+tags, commit-back, PR-reviewed promotion. The last piece is missing: **who takes
+that desired state and applies it to the cluster**. That is the C of Continuous
+*Delivery* (or *Deployment*), and there are two opposite models for it.
+
+## Push CD: CI pushes to the cluster
+
+In the *push* model, the CI workflow, at the end, **runs `kubectl apply` (or
+`skaffold deploy`) against your cluster**. For that, GitHub Actions needs cluster
+credentials: a `KUBECONFIG` with an access token, stored as a secret.
+
+```yaml
+      - name: Deploy
+        run: kubectl apply -k k8s/overlays/prod
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}   # cluster credentials in GitHub
+```
+
+It works, but it drags two serious problems:
+
+1. **Exposed credentials**: a credential with write access to your cluster lives in
+   GitHub. If it leaks (a compromised third-party action, a secret leak), someone
+   has your cluster.
+2. **Network reach**: GitHub Actions has to **be able to reach** your cluster's API
+   server. For an on-premise cluster behind NAT, that means exposing the API server
+   to the internet or setting up a tunnel — new attack surface, just to deploy.
+
+## Pull CD (GitOps): the cluster pulls the state
+
+In the *pull* model, an **agent inside the cluster** (like Argo CD, which we will
+see in module 5) watches the git repo. When it detects that the desired state
+changed, **it** applies the change to the cluster, from the inside. CI never touches
+the cluster: its job ends when it commits the desired state.
+
+The advantages are the exact mirror of the push problems:
+
+- **No exposed credentials**: nobody outside has write access to the cluster. The
+  agent runs inside with its own permissions; GitHub only stores code and manifests.
+- **Self-healing against drift**: **drift** is when the cluster's actual state
+  diverges from the desired state in git —someone did a `kubectl edit` by hand, an
+  operator changed something, a pod ended up with an old config. A pull agent
+  continuously compares *actual* against *desired* and reverts the difference: the
+  cluster returns to what git says, on its own.
+- **Audit = git log**: since every change goes through a commit, the git history
+  **is** the deploy history. Who changed what, when, and why is already recorded and
+  reviewed by PR.
+
+## Why pull wins for on-premise behind NAT
+
+Here is the decisive argument for the course's case, where the cluster is an
+**on-premise k3s behind NAT**.
+
+On a network behind NAT, **GitHub cannot initiate a connection to your k3s**: there
+is no public IP, no open port. The push model collides head-on with that — you would
+have to punch a hole in the network. But the pull model reverses the direction:
+**your k3s can initiate outbound connections to GitHub.** The agent inside the
+cluster does a `git pull` whenever it wants; nobody outside needs to get in.
+
+It is the same reason a self-hosted runner or a monitoring agent work behind NAT:
+the connection goes out, not in. Pull is not only more secure; for your topology, it
+is the only thing that works without opening your network.
+
+## The bridge to module 5
+
+You have closed the CI side: immutable images, SHA tags, reviewed promotion, desired
+state in git. Module 5 installs the other side: **Argo CD** as the pull agent that
+watches that repo and reconciles your k3s with what git says. There, the manual
+`skaffold` deploy —that last step you were dragging by hand— finally disappears.

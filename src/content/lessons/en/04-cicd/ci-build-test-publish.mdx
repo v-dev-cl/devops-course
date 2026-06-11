@@ -1,0 +1,114 @@
+---
+title: CI build, test, and publish
+description: Dissecting the real-world build-and-publish.yml workflow that tests, authenticates to GHCR, and publishes an image.
+objectives:
+  - Explain each action in the test → login → metadata → build-push pattern
+  - Understand why type=ref,event=branch produces mutable tags
+  - Justify why CI ignores k8s/** and CD watches the manifests separately
+minutes: 18
+---
+
+You know the pieces now. Let's look at the real workflow the course's example
+services use: `build-and-publish.yml`. It builds an image, tests it, and publishes
+it to GHCR. It is the base pattern you will meet (and fix) over and over.
+
+## The full workflow
+
+```yaml
+name: Build and Publish
+on:
+  push:
+    branches: [master, development]
+    paths-ignore: ['k8s/**', '**.md', 'skaffold.yaml']
+  workflow_dispatch:
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: node --test || true   # run the tests (visible even if there are none)
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+```
+
+## Action by action
+
+**`actions/checkout@v4`** — pulls the code onto the runner. Without this there is
+no Dockerfile to build.
+
+**`run: node --test`** — the test step. In a real service this would be `pnpm test`
+or `pnpm jest`. The CI rule: **if the tests fail, nothing gets published**. The
+`|| true` in the sample app is only there to keep the step visible while there are
+no tests yet; in your real service you drop it so a red test cuts the build.
+
+**`docker/login-action@v3`** — authenticates against GHCR. The key is the line
+`password: ${{ secrets.GITHUB_TOKEN }}`: it uses the workflow's ephemeral token,
+not a PAT of yours. With `permissions: packages: write` above, that token is
+enough to publish. None of your credentials are in play.
+
+**`docker/metadata-action@v5`** — computes the image **tags** and labels from the
+event context. The setting `type=ref,event=branch` means "use the branch name as
+the tag." A push to `master` produces `:master`; a push to `development` produces
+`:development`.
+
+**`docker/build-push-action@v6`** — builds the image from `context: .` (where the
+Dockerfile is) and, with `push: true`, uploads it to GHCR with the tags the
+previous step computed.
+
+## Why `type=ref,event=branch` produces mutable tags
+
+Here is the problem that defines the rest of the module. The tag is **the branch
+name**, and the branch moves: every commit to `master` produces another image
+published as `:master`, **overwriting** the previous one.
+
+The result: `ghcr.io/v-dev-cl/app:master` does not identify an image, it
+identifies "the latest thing pushed to master." If you look at a pod running
+`:master`, you do not know which commit it is. And if you need to roll back, the
+previous `:master` no longer exists: it was overwritten. That is a **mutable tag**,
+and it is exactly what the next lesson fixes with SHA tags.
+
+## paths-ignore: why CI ignores `k8s/**`
+
+Notice the `paths-ignore: ['k8s/**', '**.md', 'skaffold.yaml']`. It tells CI: "do
+not build the image if the push only touched Kubernetes manifests, documentation,
+or the skaffold." That makes sense: changing a `replicas: 2` to `3` does not change
+the image, so rebuilding and republishing would be wasted work.
+
+Here it is worth clearing up a common confusion. Isn't it dangerous for CI to
+ignore `k8s/**` if we later use GitOps? **No, quite the opposite: that separation
+is the correct one.** They are two distinct responsibilities over the same repo:
+
+- **CI** (this workflow) watches the **code** and produces **images**. It ignores
+  `k8s/**` because manifests do not affect the image.
+- **CD** (which we will see in module 5) watches the **manifests** (`k8s/**`) and
+  applies them to the cluster. It ignores the code, because its job is the desired
+  state, not compiling.
+
+Each one looks at its own part. If CI also reacted to manifest changes, it would
+rebuild identical images for no reason; if CD reacted to code changes, it would try
+to deploy before the new image even existed. The `paths-ignore` separation keeps
+each pipeline in its lane.
+
+In the next lesson we do Lab 1: replace the branch tags with SHA tags and have CI
+*commit-back* the new tag to the overlay.

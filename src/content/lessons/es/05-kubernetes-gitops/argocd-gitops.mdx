@@ -1,0 +1,187 @@
+---
+title: Argo CD y GitOps (Lab 2)
+description: Instalar Argo CD en un cluster kind, crear una Application que sincroniza un overlay desde git y ver un commit auto-sincronizarse.
+objectives:
+  - Instalar Argo CD en un cluster kind local
+  - Escribir una Application que apunta a un overlay de Kustomize en git
+  - Explicar la semántica de syncPolicy.automated (prune y selfHeal)
+  - Aplicar el patrón app-of-apps para gestionar muchas Applications
+minutes: 30
+---
+
+import LabCheck from '@/components/LabCheck';
+
+Ya tienes el estado deseado en git: imágenes inmutables, overlays de Kustomize,
+commit-back. Falta el agente *pull* del que hablamos en el módulo 4: **Argo CD**.
+Corre dentro del cluster, vigila tu repo y reconcilia el cluster con lo que git
+dice. En este lab lo instalas en un cluster local de kind y lo dejas
+sincronizando un overlay solo.
+
+## Qué es una Application
+
+El objeto central de Argo CD es la **Application**: un CRD que dice *"toma este
+path de este repo y aplícalo a este destino, y mantenlo sincronizado"*. Tiene tres
+partes:
+
+- **source**: de dónde sale el estado deseado (`repoURL`, `path`, `targetRevision`).
+- **destination**: a qué cluster y namespace va (`server`, `namespace`).
+- **syncPolicy**: si sincroniza solo y cómo.
+
+## Paso 1: Crea el cluster y arranca Argo CD
+
+Levanta un cluster kind dedicado e instala Argo CD en su propio namespace:
+
+```bash
+kind create cluster --name gitops-lab
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+```
+
+Espera a que los pods de `argocd` queden Ready:
+
+```bash
+kubectl wait --for=condition=Ready pods --all -n argocd --timeout=180s
+```
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-2/step-1" locale="es" />
+
+## Paso 2: Entra a la UI
+
+Argo CD trae una UI web. Exponla con port-forward y saca la contraseña inicial del
+`admin` (Argo CD la guarda en un Secret al instalarse):
+
+```bash
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+# en otra terminal:
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath="{.data.password}" | base64 -d; echo
+```
+
+Abre `https://localhost:8080`, usuario `admin` y esa contraseña. Verás el
+dashboard vacío: todavía no hay Applications.
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-2/step-2" locale="es" />
+
+## Paso 3: Crea la Application
+
+Apunta una Application al `k8s/overlays/dev` de tu repo de prueba (el mismo
+`labs/sample-app` que usaste en el Lab 1). Guárdalo como `app-dev.yaml`:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-app-dev
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/<tu-usuario>/lab1.git
+    path: k8s/overlays/dev
+    targetRevision: master
+  destination:
+    server: https://kubernetes.default.svc   # el mismo cluster donde corre Argo CD
+    namespace: sample-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+```
+
+> Si tu repo scratch usa `main` como rama por defecto (lo normal en repos nuevos de GitHub), ajusta `targetRevision: main`.
+
+Aplícala y verifica que Argo CD la tome:
+
+```bash
+kubectl apply -f app-dev.yaml
+kubectl get applications -n argocd
+```
+
+Deberías ver `sample-app-dev` con `SYNC STATUS: Synced` y `HEALTH STATUS: Healthy`
+una vez que reconcilie.
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-2/step-3" locale="es" />
+
+## Paso 4: Entiende prune y selfHeal
+
+El bloque `syncPolicy.automated` es lo que vuelve esto *Continuous Deployment*:
+
+- **automated**: Argo CD sincroniza solo cuando detecta diferencias entre git y el
+  cluster, sin que aprietes "Sync" a mano.
+- **prune: true**: si **borras** un recurso de git, Argo CD lo **borra** del
+  cluster. Sin prune, los recursos eliminados de git quedarían huérfanos vivos.
+- **selfHeal: true**: si alguien cambia el cluster a mano (`kubectl edit`,
+  `kubectl scale`), Argo CD **revierte** el cambio para que el cluster vuelva a lo
+  que dice git. Esto es la auto-sanación contra **drift** del módulo 4, en acción.
+
+Pruébalo: escala el Deployment a mano y mira cómo Argo CD lo devuelve a su valor:
+
+```bash
+kubectl scale deployment sample-app -n sample-dev --replicas=5
+# en segundos, Argo CD lo regresa a las réplicas que dice el overlay
+kubectl get deploy sample-app -n sample-dev -w
+```
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-2/step-4" locale="es" />
+
+## Paso 5: Mira un commit auto-sincronizarse
+
+Acá se cierra el círculo del curso. Cambia algo en el overlay y haz commit/push:
+
+```bash
+cd k8s/overlays/dev
+kustomize edit set image app=ghcr.io/<tu-usuario>/lab1:sha-nuevo
+git commit -am "deploy: dev -> sha-nuevo" && git push
+```
+
+Sin tocar el cluster, Argo CD detecta el commit, marca la Application
+`OutOfSync`, sincroniza y aplica el cambio. El `skaffold deploy` manual desapareció:
+ahora un `git push` despliega. Vuelve a `kubectl get applications -n argocd` y
+confirma que volvió a `Synced`.
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-2/step-5" locale="es" />
+
+## Paso 6: app-of-apps
+
+Con decenas de servicios no vas a aplicar decenas de Applications a mano. El patrón **app-of-apps**
+es una Application *raíz* cuyo `source` apunta a un directorio lleno de manifiestos
+de Applications. Argo CD sincroniza la raíz, que crea las Applications hijas, que a
+su vez sincronizan los servicios:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/<tu-usuario>/lab1.git
+    path: argocd/apps            # un directorio con app-dev.yaml, app-otra.yaml, ...
+    targetRevision: master
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+```
+
+Agregar un servicio nuevo es comitear un archivo de Application en `argocd/apps/`:
+la raíz lo detecta y lo despliega. Toda tu plataforma se vuelve declarativa.
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-2/step-6" locale="es" />
+
+<aside>
+
+**Aplícalo de verdad.** Esto es exactamente lo que hace el bootstrap de tu repo de
+definiciones de Argo CD (Applications/bootstrap) para los clusters reales: instala Argo CD una vez y aplica una
+Application raíz app-of-apps; de ahí en adelante, cada servicio nuevo es un commit
+en el repo de manifiestos, no un `skaffold deploy` desde tu notebook.
+
+</aside>
+
+Argo CD ya despliega solo desde git. Pero el overlay todavía tiene el secreto en
+texto plano. En la próxima lección lo sacamos de git con External Secrets Operator.

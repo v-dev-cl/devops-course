@@ -1,0 +1,115 @@
+---
+title: Compose para entornos locales
+description: Levantar app + mongo + redis en local con docker compose, healthchecks y depends_on.
+objectives:
+  - Escribir un docker-compose.yml con app, mongo y redis para desarrollo local
+  - Usar healthchecks y depends_on con condiciones para arrancar en orden seguro
+  - Reconocer cuándo compose es la herramienta equivocada
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Tu worker NestJS rara vez corre solo: necesita Mongo para persistir y Redis para
+colas o cache. Levantar cada uno a mano es tedioso y frágil. **Docker compose**
+describe todo ese conjunto en un archivo declarativo y lo levanta con un comando,
+para que cualquiera clone el repo y tenga el entorno local andando en segundos.
+
+## Un compose realista: app + mongo + redis
+
+Así se ve un `docker-compose.yml` que refleja un worker NestJS con sus
+dependencias:
+
+```yaml
+services:
+  app:
+    build: .
+    env_file: .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # Considera sano a mongo solo cuando responde un ping
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongo-data:
+  redis-data:
+```
+
+Hay tres conceptos que vale la pena desarmar: el orden de arranque, los datos
+que persisten y la configuración por `.env`.
+
+## depends_on no es lo mismo que un healthcheck
+
+`depends_on` por sí solo solo garantiza **orden de arranque del contenedor**, no
+que el servicio adentro esté listo. Mongo puede tardar segundos en aceptar
+conexiones después de que su contenedor "arrancó"; si tu app se conecta antes,
+revienta. La solución es combinarlo con `condition: service_healthy`, que hace
+que compose espere a que el **healthcheck** del servicio pase antes de arrancar
+la app. El healthcheck es el comando que define "estar listo" (un ping a Mongo,
+un `redis-cli ping`). Sin healthcheck, `service_healthy` no tiene nada que
+esperar.
+
+## Volúmenes con nombre: datos que sobreviven
+
+Por defecto, cuando borras un contenedor pierdes lo que escribió. Un **volumen
+con nombre** (`mongo-data`, `redis-data`) guarda los datos fuera del ciclo de
+vida del contenedor: puedes hacer `down` y `up` mil veces y tu base de datos
+local sigue ahí. Los declaras en la sección `volumes:` y los montas en la ruta
+donde el servicio escribe (`/data/db` para Mongo).
+
+El `.env` mantiene la configuración fuera del compose: credenciales, URLs de
+conexión, flags. `env_file: .env` las inyecta como variables de entorno en la
+app, igual que en producción harías con un Secret de Kubernetes.
+
+## Cuándo compose es la herramienta equivocada
+
+Compose es excelente para **desarrollo local y CI**. No es un orquestador de
+producción: no reprograma contenedores entre nodos, no escala horizontalmente
+con balanceo real, no hace rolling updates con health gates. Para eso está
+Kubernetes (k3s en tu caso), que vemos en el módulo 5. Usar compose en prod es
+el antipatrón: te deja sin auto-recuperación ni alta disponibilidad.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Levanta todos los servicios del compose en segundo plano (detached)."
+  accept={['docker compose up -d']}
+  hints={["El comando moderno es 'docker compose' (con espacio).", "El flag para correr en segundo plano es -d (detached)."]}
+  solution="docker compose up -d"
+/>
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Sigue en vivo los logs del servicio 'app'."
+  accept={[/^docker compose logs -f \w+$/]}
+  hints={["El subcomando es 'logs'.", "Usa -f para seguir (follow) y termina con el nombre del servicio: app"]}
+  solution="docker compose logs -f app"
+/>
+
+En la próxima lección dejamos lo local: publicamos imágenes a un registry y
+enfrentamos el problema de los tags.

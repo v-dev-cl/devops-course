@@ -1,0 +1,71 @@
+---
+title: DevOps en tu stack real
+description: Auditoría honesta del stack de referencia del curso contra CALMS y DORA, y el roadmap que sigue.
+objectives:
+  - Auditar un stack real contra CALMS y DORA
+  - Reconocer tres antipatrones comunes y por qué duelen
+  - Ubicar cada módulo del curso en el roadmap de mejora
+minutes: 10
+---
+
+Ya tienes las dos varas: CALMS para la cultura y la práctica, DORA para los
+resultados. Apliquémoslas al stack que será el ejemplo vivo de todo el curso. No
+es un caso de laboratorio: es un setup real, con sus virtudes y sus deudas.
+
+## El estado actual
+
+El stack de referencia: **decenas de microservicios NestJS** corriendo sobre **k3s
+on-prem**. La CI vive en **GitHub Actions** y construye cada imagen para
+publicarla en **GHCR**. El deploy es **solo `skaffold deploy`**, a mano, desde el
+notebook de quien lo recuerde. Los secretos están **commiteados en git**, como
+literales dentro del `secretGenerator` de kustomize. No hay **CD** (entrega
+continua) ni **métricas** de ninguna clase.
+
+## Audítalo contra CALMS
+
+- **Culture** (parcial): quien escribe el servicio también lo opera, eso está
+  bien. Pero el conocimiento operativo no está compartido.
+- **Automation** (a medias): build y release están automatizados hasta GHCR; el
+  deploy es 100% manual. La cadena se corta en el último tramo.
+- **Lean** (frágil): como desplegar duele (es manual), tiendes a juntar muchos
+  cambios en cada deploy. Eso es lo contrario de lotes chicos.
+- **Measurement** (cero): sin métricas no sabes tu frecuencia de deploy ni tu
+  lead time. Estás volando a ciegas.
+- **Sharing** (débil): "cómo se despliega esto" vive en una cabeza, no en un
+  runbook.
+
+## Audítalo contra DORA
+
+Sin instrumentación, las cuatro métricas son estimaciones a ojo: frecuencia de
+deploy baja (cuando alguien se acuerda), lead time de horas o días (commit →
+skaffold manual), change failure rate desconocida y MTTR dependiente de quién
+esté disponible. El diagnóstico es claro: velocidad media-baja, estabilidad sin
+medir.
+
+## Tres antipatrones que vamos a corregir
+
+1. **Tags mutables** (`:master`, `:development`): apuntan a una imagen que cambia
+   bajo tus pies. El `:master` de hoy no es el de ayer, así que no puedes
+   reproducir ni hacer rollback con certeza a una versión concreta.
+2. **Secretos en git**: las claves dentro del `secretGenerator` quedan en el
+   historial para siempre. Cualquiera con acceso al repo —o a un clon viejo—
+   tiene tus credenciales de producción.
+3. **Deploy manual**: cada `skaffold deploy` a mano es un paso no auditado, no
+   reproducible y fácil de olvidar. Es el agujero de Automation y la razón de que
+   no puedas medir nada.
+
+## El roadmap del curso
+
+Cada módulo cierra uno de estos gaps:
+
+- **Módulo 3 (Docker)**: endurece las imágenes —multi-stage, usuario no root,
+  imágenes chicas y reproducibles—.
+- **Módulo 4 (CI/CD)**: arregla los tags mutables (pasas a tags inmutables por
+  commit SHA) y completa la CI con tests y publicación confiable.
+- **Módulo 5 (Kubernetes + GitOps)**: agrega **CD** real (deploy automático,
+  adiós al `skaffold` a mano) y saca los **secretos** de git con una gestión
+  segura.
+
+Al terminar, este mismo stack habrá pasado de "CI automático + todo lo demás
+manual" a una cadena automatizada, medible y reproducible. El resto del curso es
+ese viaje.

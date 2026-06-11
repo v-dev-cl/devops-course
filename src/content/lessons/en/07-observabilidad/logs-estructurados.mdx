@@ -1,0 +1,114 @@
+---
+title: Structured Logging
+description: Why JSON logs with context beat plain text and how to correlate across microservices.
+objectives:
+  - Contrast plain-text logs with structured JSON logs
+  - Choose log levels and which context fields to always include
+  - Propagate a correlation id across NestJS microservices
+  - Avoid leaking secrets and PII into logs
+minutes: 16
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+`console.log('job failed', err)` works fine while you're watching the console on
+your machine. Across dozens of services running on k3s, that same log is useless: you
+don't know which service wrote it, which request triggered it, and you can't
+filter "show me only the errors from the `offers` topic." The jump from
+printf-debugging to structured logs is what makes logs *queryable*.
+
+## Plain text vs. structured JSON
+
+A structured log is an object, not a sentence. Compare:
+
+```text
+[2026-06-11 14:32:01] Error processing job offers: ECONNREFUSED
+```
+
+```json
+{"level":"error","time":"2026-06-11T14:32:01Z","service":"worker",
+ "topic":"offers","trace_id":"a1b2c3","msg":"job failed","err":"ECONNREFUSED"}
+```
+
+The first line has to be parsed with brittle regular expressions. The second one
+you filter by `service`, group by `topic`, and jump to the `trace_id` with an
+exact query. The machine reads JSON; plain text is only read by a human, one
+line at a time.
+
+## Levels done right
+
+Levels exist so you can *turn down the noise* in production. The convention:
+
+- **error** — something failed and needs attention (the job wasn't processed).
+- **warn** — something anomalous but recoverable (a retry, a fallback).
+- **info** — relevant business events (job processed, user created).
+- **debug** — fine-grained detail, off in prod, turned on while investigating.
+
+The common mistake is logging everything at `info` (or worse, `error`): when
+everything is an error, nothing is. In prod you run at `info`; during an
+incident you bump the affected service to `debug`.
+
+## Correlation ids across services
+
+A request hits the gateway, which calls `catalog`, which enqueues a job the
+`worker` consumes later. To reconstruct that story you need a thread: a
+**correlation id** (or `trace_id`) born at the edge that rides everywhere.
+
+- Over HTTP, it's propagated via a header like `x-request-id`.
+- In **queue jobs** —the easy-to-forget case— the id has to travel *inside the
+  message payload*. When you publish to Kafka, you include the `trace_id` in the
+  job; when the `worker` consumes it, it pulls it out of the message and puts
+  it on its logger. If you don't propagate it there, you lose the trail right at
+  the async hop.
+
+Sketch with pino and the NestJS logger:
+
+```ts
+import pino from 'pino';
+
+export const logger = pino({
+  level: process.env.LOG_LEVEL ?? 'info',
+  // In prod: JSON to stdout. In dev: pino-pretty to read it comfortably.
+  base: { service: process.env.SERVICE_NAME }, // fixed field on every log
+});
+
+// Child logger with the correlation id, per request or per job
+function handleJob(job: Job) {
+  const log = logger.child({ trace_id: job.traceId, topic: job.topic });
+  log.info('processing job');
+  // ...
+}
+```
+
+`logger.child({ trace_id })` attaches the field to every log of that request or
+job without you repeating it by hand.
+
+## Logs on k3s without paying for a SaaS
+
+The no-budget reality: your containers write to stdout, k3s captures it, and you
+view it with `kubectl logs`. At the node level, that lives in files under `/var/log/pods` (the k3s service log itself goes to journald). It works for one service and one incident, but `kubectl logs` doesn't
+search across services and doesn't survive the pod dying.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Tail the worker deployment's logs live to see what it is writing right now."
+  accept={[/^kubectl logs -f (deploy(ment)?\/)?worker( -n \S+)?$/]}
+  hints={["kubectl logs has a -f flag to follow the stream.", "kubectl logs -f deploy/worker"]}
+  solution="kubectl logs -f deploy/worker"
+/>
+
+The next step, affordable and cheap, is **Loki**: the "Prometheus of logs." An
+agent (Promtail/Alloy) collects the stdout of every pod and ships it to Loki,
+which indexes by labels (not by full content, that's why it's cheap) and you
+query it from the same Grafana you already use for metrics. It's the natural
+upgrade when `kubectl logs` falls short.
+
+## Retention and PII
+
+Two cautions. **Retention**: logs grow without end; define how many days you keep
+(30 is usually enough) and rotate or delete the rest, or the disk fills up on its
+own. **PII and secrets**: never log passwords, tokens, card numbers, or personal
+data. It's easy to leak them by accident when you log a whole request object or a
+body. Redact, or explicitly allowlist which fields you may log; a log is data
+that persists and that many people can read.

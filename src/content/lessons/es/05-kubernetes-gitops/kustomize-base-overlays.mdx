@@ -1,0 +1,137 @@
+---
+title: Kustomize, base y overlays
+description: Estructura base/overlays, generadores con sufijo de hash, el transformer de images y por qué los literales de secretGenerator son un anti-patrón.
+objectives:
+  - Estructurar manifiestos en una base reutilizable y overlays por entorno
+  - Explicar por qué el sufijo de hash de los generadores hace rodar los pods al cambiar la config
+  - Identificar qué campo edita el kustomize edit set image del Lab 1
+  - Reconocer el anti-patrón de poner secretos literales en secretGenerator
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Tienes decenas de servicios y dos entornos (dev, prod). Si copias y pegas el YAML del
+Deployment por cada combinación, cualquier cambio se vuelve buscar-y-reemplazar en
+70 archivos. **Kustomize** resuelve esto sin plantillas ni un lenguaje nuevo:
+defines una *base* común y le aplicas *overlays* que la modifican por entorno.
+
+## base y overlays
+
+La convención es un directorio `k8s/` con esta forma:
+
+```
+k8s/
+├── base/
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   └── kustomization.yaml      # lista los recursos de la base
+└── overlays/
+    ├── dev/kustomization.yaml  # apunta a ../../base y la modifica
+    └── prod/kustomization.yaml
+```
+
+La **base** tiene los manifiestos genéricos, sin nada específico de un entorno. Un
+**overlay** referencia la base y le aplica diferencias: el namespace, el tag de
+imagen, valores de configuración, parches puntuales.
+
+```yaml
+# k8s/overlays/dev/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sample-dev
+resources:
+  - ../../base
+```
+
+Renderizas el resultado final (base + overlay) con `kubectl kustomize` o
+`kustomize build`. Eso te da el YAML que de verdad se aplica al cluster, sin tocar
+la base.
+
+## Generadores con sufijo de hash
+
+En vez de escribir un ConfigMap a mano, Kustomize lo **genera** desde literales o
+archivos con `configMapGenerator` (y `secretGenerator` para Secrets):
+
+```yaml
+configMapGenerator:
+  - name: sample-app-config
+    literals:
+      - GREETING=hola dev
+```
+
+La magia está en el **sufijo de hash**. Kustomize calcula un hash del contenido y
+lo agrega al nombre: el ConfigMap real se llama `sample-app-config-7c2f9b`, y
+Kustomize **reescribe el `envFrom` del Deployment** para que apunte a ese nombre con
+hash. ¿Por qué importa? Porque resuelve el problema de la lección 1: cuando cambias
+el valor del ConfigMap, **el hash cambia**, el nombre cambia, el Deployment ahora
+referencia un objeto nuevo — y eso **sí dispara un rollout**. Los pods se reemplazan
+y toman la config nueva, automáticamente. Sin generadores tendrías que acordarte de
+hacer `rollout restart` a mano cada vez.
+
+## El transformer de images
+
+El campo `images:` del overlay reemplaza imágenes por nombre, sin tocar el
+Deployment de la base:
+
+```yaml
+images:
+  - name: app                          # el placeholder en la base
+    newName: ghcr.io/v-dev-cl/sample-app
+    newTag: development
+```
+
+Esto es exactamente lo que editó el **commit-back del Lab 1**: cuando CI corre
+`kustomize edit set image app=ghcr.io/...:sha-a1b2c3d`, lo que cambia es el `newTag`
+(y `newName`) de esta entrada `images:`. Por eso el tag de imagen "vive" en el
+`kustomization.yaml` del overlay, no en el Deployment de la base: el overlay es el
+estado deseado por entorno, y es donde CI escribe qué SHA debe correr.
+
+## Parches (patches)
+
+Para cambios que no son ni imagen ni config —subir réplicas en prod, agregar un PDB
+solo en un entorno— usas `patches`. Un *strategic merge patch* fusiona un fragmento
+de YAML con el recurso de la base por nombre:
+
+```yaml
+patches:
+  - target: { kind: Deployment, name: sample-app }
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+```
+
+Así prod corre 3 réplicas y dev 1, sin duplicar el Deployment entero.
+
+## Anti-patrón: secretos literales en secretGenerator
+
+Acá hay una trampa peligrosa, y la vamos a arreglar en el Lab 3. Nada te impide
+generar un **Secret** con literales igual que un ConfigMap:
+
+```yaml
+secretGenerator:
+  - name: sample-app-secrets
+    literals:
+      - API_KEY=super-secret-dev-key   # ANTI-PATRÓN: el secreto queda en git
+```
+
+Esto **funciona**, pero pone el valor real del secreto en texto plano en el
+`kustomization.yaml`, que vive en git. Aunque después lo borres, **el historial de
+git lo guarda para siempre**: cualquiera con acceso al repo (o a un fork, o a un
+backup) puede leerlo. Un secreto comiteado se considera comprometido y hay que
+rotarlo. El `labs/sample-app` del curso trae este anti-patrón **a propósito**,
+porque reproduce el "antes" real. En el **Lab 3** lo reemplazamos por External
+Secrets Operator, de modo que el secreto deje de vivir en git.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Renderiza el overlay de dev para ver el YAML final que se aplicaría al cluster."
+  accept={['kubectl kustomize k8s/overlays/dev', 'kustomize build k8s/overlays/dev']}
+  hints={["Sirve 'kubectl kustomize <ruta>' o 'kustomize build <ruta>'.", "La ruta del overlay es k8s/overlays/dev"]}
+  solution="kubectl kustomize k8s/overlays/dev"
+/>
+
+Ya tienes el estado deseado bien estructurado en git. En la próxima lección
+instalamos el agente que lo vigila y lo aplica solo: Argo CD.

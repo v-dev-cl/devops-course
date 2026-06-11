@@ -1,0 +1,162 @@
+---
+title: Multi-cluster con ApplicationSet (Lab 4)
+description: Un solo template que genera varias Applications con el list generator de ApplicationSet, para desplegar el mismo servicio en varios clusters.
+objectives:
+  - Explicar qué es un ApplicationSet y su list generator
+  - Generar varias Applications desde un template con parámetros
+  - Simular dos clusters con dos namespaces en kind y verificar ambas Applications
+  - Decidir cuándo conviene un ApplicationSet en vez de N Applications a mano
+minutes: 20
+---
+
+import LabCheck from '@/components/LabCheck';
+
+Imagina que el mismo servicio corre en varios clusters, cada uno con una
+configuración distinta —por ejemplo, cada cluster procesa un subconjunto de tags vía
+una variable de entorno—. Escribir y mantener una Application por cluster a mano se
+vuelve repetitivo y propenso a errores. **ApplicationSet** resuelve esto: un solo
+template que **genera** muchas Applications a partir de una lista de parámetros.
+
+## Qué es un ApplicationSet
+
+El ApplicationSet es un controlador de Argo CD que toma dos cosas:
+
+- Un **generador** que produce un conjunto de elementos (cada uno, un mapa de
+  parámetros).
+- Un **template** de Application con placeholders `{{...}}` que se rellenan con esos
+  parámetros.
+
+Por cada elemento del generador, el controlador crea una Application. Hay varios
+generadores (list, cluster, git, matrix); el más simple es el **list generator**,
+donde tú escribes los elementos a mano.
+
+## Paso 1: Crea el ApplicationSet con un list generator
+
+Sigues sobre el cluster `gitops-lab` del Lab 2, con Argo CD instalado. Vamos a
+simular dos "clusters" como dos namespaces (`cluster-a`, `cluster-b`) en el
+mismo kind —más sobre la honestidad de esta simulación al final. Cada elemento de la
+lista lleva un `cluster` y un `filterTags`:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: web-app
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - cluster: cluster-a
+            filterTags: "tagA"
+          - cluster: cluster-b
+            filterTags: "tagB"
+  template:
+    metadata:
+      name: 'app-{{cluster}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/<tu-usuario>/lab1.git
+        path: k8s/overlays/dev
+        targetRevision: master
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{cluster}}'          # un namespace por "cluster"
+      syncPolicy:
+        automated: { prune: true, selfHeal: true }
+        syncOptions:
+          - CreateNamespace=true
+```
+
+```bash
+kubectl apply -f applicationset.yaml
+```
+
+El `{{cluster}}` del template se rellena con `cluster-a` y `cluster-b`: el
+controlador genera **dos** Applications, `app-cluster-a` y
+`app-cluster-b`, cada una desplegando a su namespace.
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-4/step-1" locale="es" />
+
+## Paso 2: Verifica que se generaron las dos Applications
+
+Mira las Applications que creó el ApplicationSet:
+
+```bash
+kubectl get applicationset -n argocd
+kubectl get applications -n argocd
+```
+
+Deberías ver `app-cluster-a` y `app-cluster-b`, ambas tendiendo a
+`Synced` / `Healthy`. Confirma que cada una desplegó a su namespace:
+
+```bash
+kubectl get deploy -n cluster-a
+kubectl get deploy -n cluster-b
+```
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-4/step-2" locale="es" />
+
+## Paso 3: Agrega un tercer "cluster" editando la lista
+
+La gracia del ApplicationSet es que escalar es **agregar un elemento a la lista**,
+no copiar otra Application. Agrega un tercer elemento y vuelve a aplicar:
+
+```yaml
+        elements:
+          - cluster: cluster-a
+            filterTags: "tagA"
+          - cluster: cluster-b
+            filterTags: "tagB"
+          - cluster: cluster-c
+            filterTags: "tagC"
+```
+
+```bash
+kubectl apply -f applicationset.yaml
+kubectl get applications -n argocd
+```
+
+Aparece `app-cluster-c` sin que escribieras una Application nueva. Borrar un
+elemento de la lista hace lo contrario: el controlador **elimina** esa Application (y
+con `prune`, sus recursos).
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-4/step-3" locale="es" />
+
+## La honestidad de la simulación
+
+En este lab usamos **dos namespaces del mismo cluster** para "simular" dos clusters,
+porque levantar varios kind es pesado para un ejercicio. En multi-cluster **de
+verdad**, el patrón es idéntico pero con dos diferencias:
+
+1. Registras cada cluster en Argo CD con `argocd cluster add <contexto>`, que guarda
+   sus credenciales como un Secret.
+2. En el template, `destination.server` apunta a la **URL del API server de cada
+   cluster** (no a `kubernetes.default.svc`), normalmente parametrizada con
+   `{{server}}` desde un **cluster generator** en vez del list generator.
+
+La estructura —un template, N elementos, N Applications— no cambia. Lo que aprendiste
+con namespaces se traslada tal cual a clusters reales cambiando el generador y el
+`destination.server`.
+
+## ¿ApplicationSet o N Applications?
+
+- Usa **N Applications a mano** cuando son pocas y *distintas entre sí* (cada una con
+  su propia estructura, repo o lógica).
+- Usa **ApplicationSet** cuando tienes el *mismo* patrón repetido con parámetros: el
+  mismo servicio en varios clusters, o un servicio por equipo. Una fuente de verdad
+  (el template) en vez de N copias que se desincronizan.
+
+<aside>
+
+**Aplícalo de verdad.** El caso real es el mismo servicio repartido por
+clusters según los tags que procesa. En tu repo de definiciones de Argo CD, un ApplicationSet con un
+elemento por cluster (y un cluster generator cuando los clusters estén registrados)
+reemplaza el copiar-pegar de Applications: agregar un cluster pasa a ser
+una línea en la lista de elementos.
+
+</aside>
+
+Con esto cierras el módulo: del repaso de Kubernetes a un GitOps multi-cluster con
+secretos fuera de git. El deploy manual con `skaffold` quedó atrás para siempre.

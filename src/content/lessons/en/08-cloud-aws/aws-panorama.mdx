@@ -1,0 +1,85 @@
+---
+title: AWS Landscape
+description: The mental map of regions, AZs, and core AWS services, and how it fits your on-premise.
+objectives:
+  - Locate regions, availability zones, and the shared responsibility model
+  - Recognize the core services (compute, network, storage, IAM) and what they are for
+  - Reason about a hybrid cloud + on-premise setup for the Chile context
+  - Roughly estimate the cost axes of an AWS service
+minutes: 16
+---
+
+Your current stack —dozens of NestJS services on k3s on your own VPS— is **cheap and yours**.
+Start from that premise: AWS is not here to replace it, but for you to adopt
+**selectively** the services where the operational burden hurts. A lift-and-shift
+(moving everything as-is) usually ends up more expensive and more complex than
+your setup. The right question isn't "should I go to the cloud?", but "which
+piece is worth having someone else operate for me?".
+
+## The map: account, region, AZ
+
+Three levels organize everything in AWS:
+
+- **Account** — your billing and isolation boundary. Every resource lives in an
+  account and is billed there. Serious teams use several accounts (dev, prod).
+- **Region** — a set of datacenters in a geographic area, with its code:
+  `us-east-1` (Virginia), `sa-east-1` (São Paulo). You pick a region by latency,
+  by cost (prices vary across regions), and by data residency.
+- **Availability Zone (AZ)** — within a region there are several AZs, which are
+  physically separate datacenters connected with low latency. Spreading across
+  several AZs is what gives you high availability if one goes down.
+
+## Shared responsibility
+
+AWS operates under the **shared responsibility model**: AWS is responsible for
+security **of** the cloud (hardware, datacenters, hypervisor) and you for security
+**in** the cloud (your data, your IAM permissions, patching your EC2 instances). A
+misconfigured, public S3 bucket is your fault, not AWS's.
+
+## The Chile context: real latency
+
+There's no full AWS region in Chile. The closest is **`sa-east-1` (São Paulo)**,
+with an RTT on the order of ~40–60 ms from Santiago. For comparison, `us-east-1`
+(Virginia) is around ~150 ms. There's also the **Santiago Local Zone (`scl1`,
+whose parent is `us-east-1`)**: a compute and network extension to serve low local
+latency, but with a reduced service catalog —don't expect everything a full region
+has.
+
+This matters for you: if a piece is **chatty** (many round trips) with your k3s on
+your European VPS (Germany), putting it in `sa-east-1` won't fix the latency toward your
+cluster. Whatever you migrate should be self-contained or latency-tolerant.
+
+## The ~6 services to start with
+
+You don't need the catalog of 200+ services. These six orient you:
+
+- **IAM** — identity and permissions. The security foundation of everything (next lesson).
+- **VPC** — your private network in AWS: subnets, routing, firewalls.
+- **EC2** — virtual machines, raw compute.
+- **S3** — object storage (product images, backups).
+- **RDS** — managed databases (Postgres, MySQL).
+- **Secrets Manager** — managed secrets (the module's deep-dive, with ESO).
+
+## CapEx/ops vs OpEx/managed, honestly
+
+Your VPS is **CapEx-ish**: you pay a low fixed cost, but **you operate**
+(patches, backups, HA, monitoring). AWS is **OpEx**: you pay per use, pricier per
+unit, but the provider operates the managed piece. The trade isn't "cheap vs
+expensive": it's **money vs operations time**. A Multi-AZ RDS costs several times
+what a Postgres on a VM does, but it takes failover and backups off your plate.
+That math only adds up where operating genuinely hurts.
+
+## Free tier and the egress trap
+
+The **free tier** comes in three flavors: always-free (with limits), 12 months
+free (new account), and one-off trials. It's for learning, not for production.
+
+The classic cost trap is **egress**: AWS charges you for traffic that **leaves**
+toward the internet (inbound is usually free). A chatty pattern between your k3s
+and an S3 or RDS in AWS can produce a surprise transfer bill. Before moving
+anything, estimate: how many GB leave per month and at what price per GB in that
+region. Compute is easy to predict; egress is what inflates the bills you didn't
+expect.
+
+In the next lesson we cover the two foundations everything in AWS is built on:
+IAM (who can do what) and VPC (the network).

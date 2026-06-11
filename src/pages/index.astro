@@ -1,0 +1,13 @@
+---
+const target = import.meta.env.BASE_URL.replace(/\/$/, '') + '/es/';
+---
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="refresh" content={`0;url=${target}`} />
+    <link rel="canonical" href={target} />
+    <title>DevOps Course</title>
+  </head>
+  <body><a href={target}>Continuar / Continue</a></body>
+</html>

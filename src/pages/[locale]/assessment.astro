@@ -1,0 +1,14 @@
+---
+import Base from '@/layouts/Base.astro';
+import Assessment from '@/components/Assessment';
+import { LOCALES, t, type Locale } from '@/i18n/ui';
+
+export function getStaticPaths() {
+  return LOCALES.map((locale) => ({ params: { locale } }));
+}
+const locale = Astro.params.locale as Locale;
+---
+<Base locale={locale} title={t(locale, 'assessment.title')}>
+  <h1 class="mb-6 text-2xl font-bold">{t(locale, 'assessment.title')}</h1>
+  <Assessment client:load locale={locale} />
+</Base>

@@ -1,0 +1,126 @@
+---
+title: Anatomía de un workflow
+description: Qué son triggers, jobs, steps, runners y permisos, diseccionando un workflow mínimo de GitHub Actions línea por línea.
+objectives:
+  - Identificar los triggers, jobs, steps y runners de un workflow de GitHub Actions
+  - Distinguir secrets de variables y explicar el modelo de permisos de GITHUB_TOKEN
+  - Usar caché de dependencias y concurrency para acelerar y proteger tus pipelines
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Un **workflow** de GitHub Actions es un archivo YAML en `.github/workflows/` que
+describe qué hacer y cuándo. Antes de escribir el pipeline real que compila y
+publica tus imágenes, hay que entender las piezas. Vamos a diseccionar un
+workflow mínimo línea por línea: ese vocabulario lo vas a usar en todo el módulo.
+
+## El workflow mínimo
+
+```yaml
+name: CI                       # nombre visible en la pestaña Actions
+
+on:                            # TRIGGERS: cuándo corre este workflow
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:           # botón manual en la UI
+
+concurrency:                   # evita corridas duplicadas
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:                   # qué puede hacer el GITHUB_TOKEN de este workflow
+  contents: read
+
+jobs:
+  test:                        # un JOB; corre en su propia VM
+    runs-on: ubuntu-latest     # el RUNNER
+    steps:                     # pasos secuenciales dentro del job
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm          # cachea el store de pnpm entre corridas
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+```
+
+## Triggers: el `on`
+
+El bloque `on` define **cuándo** corre el workflow. Los tres más comunes:
+
+- **`push`**: cada vez que se empuja a las ramas indicadas. Aquí, solo `master`.
+- **`pull_request`**: cuando se abre o actualiza un PR. Es el momento de correr
+  tests *antes* de mergear.
+- **`workflow_dispatch`**: agrega un botón "Run workflow" en la UI, para correrlo
+  a mano sin un push.
+
+Un detalle de seguridad clave: en un `pull_request` desde un **fork**, GitHub
+**no** expone tus secrets al workflow. Si lo hiciera, cualquiera podría abrir un
+PR malicioso que imprima tus credenciales. Por eso los jobs que necesitan
+secrets (como publicar una imagen) corren en `push` a tus ramas, no en PRs de
+forks.
+
+## Jobs, steps y runners
+
+Un **job** es una unidad de trabajo que corre en su propia máquina virtual
+limpia: el **runner** (`runs-on: ubuntu-latest`). Los jobs corren en paralelo por
+defecto; los **steps** dentro de un job corren en secuencia y comparten el mismo
+filesystem.
+
+Cada step es o un `uses:` (una acción reutilizable publicada por alguien, como
+`actions/checkout@v4`, fijada a una versión) o un `run:` (un comando de shell).
+El primer step casi siempre es `checkout`, porque el runner arranca vacío: sin él
+no tienes tu código.
+
+## Secrets vs. variables
+
+Hay dos formas de inyectar configuración:
+
+- **Variables** (`vars.X`): valores no sensibles, visibles en los logs. Por
+  ejemplo, el nombre de un registry o un entorno.
+- **Secrets** (`secrets.X`): valores sensibles (tokens, claves). GitHub los
+  **enmascara** automáticamente en los logs (aparecen como `***`).
+
+Nunca pongas una clave directo en el YAML: el archivo vive en el repo y queda en
+el historial de git para siempre.
+
+## El modelo de permisos de GITHUB_TOKEN
+
+Cada corrida recibe un token efímero, `GITHUB_TOKEN`, que se crea al empezar y
+**se revoca solo** al terminar el workflow. El bloque `permissions` declara qué
+puede tocar ese token. La buena práctica es partir del **mínimo privilegio**:
+
+```yaml
+permissions:
+  contents: read      # solo leer el repo
+  packages: write     # ...y publicar paquetes/imágenes, si el job lo necesita
+```
+
+Si no declaras `permissions`, el token puede heredar permisos amplios. Declararlo
+explícito y acotado es la diferencia entre un token que solo lee y uno que podría
+borrar tu repo si una acción de terceros resulta comprometida.
+
+## Caché y concurrency
+
+`actions/setup-node` con `cache: pnpm` guarda el store de pnpm entre corridas:
+la segunda vez no re-baja todas las dependencias, y el pipeline arranca más
+rápido. Es caché de dependencias, no de tu build.
+
+El bloque `concurrency` agrupa corridas por una `group` (aquí, por rama). Con
+`cancel-in-progress: true`, si empujas dos commits seguidos, la corrida vieja se
+cancela y solo queda la del último commit. Esto importa cuando una corrida
+**despliega**: no quieres dos deploys pisándose por la misma rama.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Lista los archivos de workflow del repo. Por convención viven en el directorio .github/workflows."
+  accept={[/^ls \.github\/workflows\/?$/]}
+  hints={["El comando es 'ls' sobre un directorio.", "La ruta es .github/workflows"]}
+  solution="ls .github/workflows"
+/>
+
+Ya tienes el vocabulario. En la próxima lección diseccionamos un workflow real
+que compila, testea y publica una imagen a GHCR.

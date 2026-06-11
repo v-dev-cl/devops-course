@@ -1,0 +1,57 @@
+---
+import { getCollection, render, type CollectionEntry } from 'astro:content';
+import Base from '@/layouts/Base.astro';
+import Quiz from '@/components/Quiz';
+import MarkComplete from '@/components/MarkComplete';
+import { getModule } from '@/data/curriculum';
+import { lessonQuizzes } from '@/data/questions';
+import { t, url, type Locale } from '@/i18n/ui';
+
+type LessonEntry = CollectionEntry<'lessons'>;
+
+export async function getStaticPaths() {
+  const entries = await getCollection('lessons');
+  return entries.map((entry: LessonEntry) => {
+    const parts = entry.id.split('/');
+    const locale = parts[0] as string;
+    const module = parts[1] as string;
+    const lesson = parts[2] as string;
+    return { params: { locale, module, lesson }, props: { entry } };
+  });
+}
+
+interface Props { entry: LessonEntry }
+interface Params { locale: string; module: string; lesson: string }
+const { entry } = Astro.props as Props;
+const { locale: _locale, module: moduleId, lesson: slug } = Astro.params as unknown as Params;
+const locale = _locale as Locale;
+
+const { Content } = await render(entry);
+const lid = `${moduleId}/${slug}`;
+const quiz = lessonQuizzes[lid];
+const mod = getModule(moduleId)!;
+const idx = mod.lessons.findIndex((l) => l.slug === slug);
+const prev = mod.lessons[idx - 1];
+const next = mod.lessons[idx + 1];
+---
+<Base locale={locale} title={entry.data.title}>
+  <p class="text-sm text-zinc-500">
+    <a href={url(locale, mod.id)} class="underline">{mod.title[locale]}</a>
+  </p>
+  <article class="prose prose-zinc mt-2 max-w-none dark:prose-invert">
+    <h1>{entry.data.title}</h1>
+    <aside class="not-prose mb-6 rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <p class="mb-2 font-semibold">{t(locale, 'lesson.objectives')}</p>
+      <ul class="list-inside list-disc space-y-1">
+        {entry.data.objectives.map((o: string) => <li>{o}</li>)}
+      </ul>
+    </aside>
+    <Content />
+  </article>
+  {quiz && <Quiz client:visible locale={locale} questions={quiz} lessonId={lid} />}
+  <MarkComplete client:load lessonId={lid} locale={locale} />
+  <nav class="mt-8 flex justify-between text-sm">
+    <span>{prev && <a href={url(locale, mod.id, prev.slug)} class="underline">← {t(locale, 'lesson.prev')}</a>}</span>
+    <span>{next && <a href={url(locale, mod.id, next.slug)} class="underline">{t(locale, 'lesson.next')} →</a>}</span>
+  </nav>
+</Base>

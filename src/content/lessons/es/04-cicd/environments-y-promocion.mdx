@@ -1,0 +1,103 @@
+---
+title: Environments y promoción
+description: GitHub environments, reglas de protección y por qué promover dev → prod con overlays gana frente a una rama por entorno.
+objectives:
+  - Configurar un GitHub environment con required reviewers y reglas de protección
+  - Comparar overlay-por-entorno con branch-por-entorno y elegir overlays
+  - Promover de dev a prod como un cambio de overlay revisado por PR
+minutes: 15
+---
+
+Ya tienes deploys reproducibles a `dev`. Pero `prod` no debería desplegarse solo
+porque alguien hizo push: necesita una puerta. GitHub **environments** son esa
+puerta, y la forma en que organizas tus manifiestos decide si la promoción es
+limpia o un dolor de cabeza.
+
+## GitHub environments
+
+Un *environment* (Settings → Environments) es un destino con nombre —`dev`,
+`staging`, `prod`— al que puedes atar **reglas de protección**:
+
+- **Required reviewers**: uno o más humanos deben aprobar antes de que un job que
+  apunte a ese environment corra. Es una puerta manual para `prod`.
+- **Wait timer**: una espera obligatoria (por ejemplo 5 minutos) antes de
+  desplegar, para alcanzar a cancelar si algo se ve mal.
+- **Deployment branches**: restringe qué ramas pueden desplegar a ese environment
+  (por ejemplo, solo `master` puede tocar `prod`).
+- **Environment secrets**: secrets que solo existen para ese environment, así las
+  credenciales de prod nunca quedan disponibles en un job de dev.
+
+Un job se ata a un environment con una sola línea:
+
+```yaml
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+    environment: prod        # ← aplica las reglas de protección de 'prod'
+    steps:
+      - ...
+```
+
+Cuando ese job va a correr, GitHub lo pausa y pide la aprobación de un reviewer.
+Recién ahí continúa. La aprobación queda registrada: quién aprobó qué deploy y
+cuándo.
+
+## Dos formas de modelar los entornos
+
+La pregunta de diseño es: ¿cómo representas las diferencias entre dev y prod
+(distinto namespace, distinto número de réplicas, distinto greeting)? Hay dos
+escuelas.
+
+### Branch-por-entorno (el patrón a evitar)
+
+Una rama `dev` y una rama `prod`, cada una con sus manifiestos. Promover es
+mergear `dev` en `prod`. Suena simple pero se pudre rápido:
+
+- Los merges arrastran **todo**, no solo el cambio que querías promover. Es fácil
+  promover sin querer un experimento que estaba en `dev`.
+- Las ramas **divergen**: terminas con conflictos y con diferencias que nadie
+  recuerda por qué están ahí.
+- El historial deja de ser lineal y "qué hay en prod" vuelve a ser difícil de leer.
+
+### Overlay-por-entorno (recomendado)
+
+Una sola rama (`master`), y las diferencias viven en overlays de Kustomize:
+`k8s/overlays/dev/` y `k8s/overlays/prod/`, ambos sobre una misma `k8s/base/`. La
+base tiene lo común; cada overlay parcha solo lo suyo (namespace, réplicas, tag de
+imagen). Esto es justo lo que tiene `labs/sample-app`.
+
+Las ventajas:
+
+- **Una sola fuente de verdad**: una rama, historial lineal. "Qué hay en prod" se
+  lee en `k8s/overlays/prod/kustomization.yaml`.
+- Las diferencias entre entornos son **explícitas y revisables**: el diff de un
+  overlay muestra exactamente qué cambia entre dev y prod.
+- No hay merges entre ramas largas que diverjan.
+
+## Cómo se ve una promoción con overlays
+
+Promover el tag que ya validaste en `dev` hacia `prod` es un cambio de **una
+línea** en el overlay de prod, propuesto como PR:
+
+```bash
+cd k8s/overlays/prod
+kustomize edit set image app=ghcr.io/v-dev-cl/app:sha-a1b2c3d
+git checkout -b promote-a1b2c3d
+git commit -am "promote: prod -> sha-a1b2c3d"
+git push -u origin promote-a1b2c3d   # abre un PR
+```
+
+El PR muestra exactamente qué SHA entra a prod. Un reviewer lo aprueba (la regla
+de protección del environment `prod` lo exige), se mergea, y CD aplica el cambio.
+La promoción quedó documentada, revisada y atada a un SHA inmutable.
+
+## Release tagging
+
+Para releases visibles a humanos, además del tag por SHA puedes crear un **tag de
+git** semver (`v1.4.2`) en el commit que promueves, o usar GitHub Releases. El SHA
+sigue siendo la verdad técnica para el deploy; el semver es la etiqueta legible
+para changelogs y comunicación. No son excluyentes: el tag por SHA garantiza
+reproducibilidad, el semver da una historia que las personas pueden seguir.
+
+En la próxima lección damos el salto conceptual de CI a CD: quién aplica esos
+cambios al cluster, y por qué el modelo *pull* gana para clusters on-premise.

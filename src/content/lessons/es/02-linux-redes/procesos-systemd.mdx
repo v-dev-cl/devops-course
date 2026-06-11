@@ -1,0 +1,133 @@
+---
+title: Procesos, señales y systemd
+description: Cómo viven, mueren y se reinician los procesos en Linux y cómo systemd los supervisa.
+objectives:
+  - Inspeccionar procesos con ps, top y /proc y leer su estado
+  - Enviar señales (SIGTERM, SIGKILL, SIGHUP) y entender el apagado ordenado
+  - Leer y escribir una unidad systemd con Restart y dependencias
+  - Diagnosticar un servicio caído con systemctl status y journalctl
+minutes: 20
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Un servicio es, al final, un proceso: un programa en ejecución con un número de
+identificación (**PID**), su propia memoria y sus tres descriptores. Entender
+cómo arrancan, cómo mueren y quién los resucita es la base para operar
+cualquier cosa, desde tu worker NestJS hasta el propio k3s — que, como verás,
+es solo otro proceso supervisado por systemd.
+
+## Procesos y PIDs
+
+Cada proceso tiene un PID único y un PID padre (PPID): los procesos forman un
+árbol que cuelga de `PID 1`. Para verlos:
+
+```bash
+ps aux | grep node          # todos los procesos node
+ps -ef --forest             # el árbol completo con jerarquía
+top    # o htop: uso de CPU/memoria en vivo, ordenable
+```
+
+El kernel expone cada proceso en `/proc/<pid>/`: `/proc/1234/status` te dice su
+estado y memoria, `/proc/1234/environ` sus variables de entorno,
+`/proc/1234/fd/` los archivos que tiene abiertos. Es la fuente de verdad cuando
+`ps` no te da el detalle.
+
+## Señales: cómo le hablas a un proceso
+
+No matas un proceso a la fuerza de inmediato: le envías una **señal**, un
+mensaje asíncrono que el proceso puede manejar.
+
+- **SIGTERM (15)** — "termina, por favor". Es la señal *educada*: el proceso
+  puede capturarla, cerrar conexiones, terminar requests en vuelo y salir
+  limpio. Es lo que envía `kill <pid>` por defecto.
+- **SIGKILL (9)** — "muere ya". El kernel lo mata sin que el proceso pueda
+  reaccionar. No hay limpieza, no hay despedida. Último recurso.
+- **SIGHUP (1)** — clásicamente "recarga tu config" para muchos daemons.
+
+```bash
+kill 1234            # SIGTERM: apagado ordenado
+kill -9 1234         # SIGKILL: a la fuerza, sin limpieza
+```
+
+### Por qué esto importa en Kubernetes
+
+Cuando Kubernetes baja un pod, hace exactamente esta danza: envía **SIGTERM**,
+ejecuta tu hook `preStop` si lo definiste, y espera hasta
+`terminationGracePeriodSeconds` (30s por defecto). Si tu proceso no salió en ese
+plazo, lo remata con **SIGKILL**. Por eso tu app NestJS debe escuchar SIGTERM y
+cerrar el servidor HTTP y las conexiones a Mongo/Kafka antes de salir — si no,
+cada deploy corta requests en vuelo:
+
+```ts
+process.on('SIGTERM', async () => {
+  await app.close();   // cierra HTTP, conexiones, consumers de Kafka
+  process.exit(0);
+});
+```
+
+Un `preStop` que duerme unos segundos le da tiempo al load balancer a dejar de
+mandarte tráfico antes de que cierres. SIGTERM + grace period es la versión
+Kubernetes de "apaga el servicio sin romper a los usuarios".
+
+## systemd: el supervisor
+
+En la mayoría de los servidores Linux modernos, `PID 1` es **systemd**. Su
+trabajo es arrancar, detener, reiniciar y vigilar servicios (que llama
+*units*). Los comandos del día a día:
+
+```bash
+systemctl status k3s         # ¿está corriendo? PID, memoria, últimas líneas de log
+systemctl restart sync-worker # reinicia
+systemctl enable sync-worker  # arranca solo al bootear
+systemctl stop sync-worker    # detiene (manda SIGTERM, espera, luego SIGKILL)
+```
+
+### Anatomía de una unit
+
+Un servicio se define en un archivo `.service`. Lo mínimo que tienes que poder
+leer:
+
+```ini
+[Unit]
+Description=Kafka Sync Worker
+After=network-online.target        # arranca después de tener red
+
+[Service]
+ExecStart=/usr/bin/node /opt/sync-worker/main.js
+Restart=on-failure                 # si crashea, systemd lo levanta de nuevo
+RestartSec=5                       # espera 5s antes de reintentar
+User=worker
+EnvironmentFile=/etc/sync-worker.env
+
+[Install]
+WantedBy=multi-user.target         # se habilita en el arranque normal
+```
+
+`Restart=on-failure` es el equivalente systemd de un `restartPolicy` de
+Kubernetes: el supervisor resucita el proceso. **k3s mismo corre así**: es una
+unit con `Restart=always`, por eso sobrevive a un reboot del nodo.
+
+## Diagnosticar un servicio caído
+
+La rutina cuando algo no levanta: `systemctl status` te da el panorama (estado,
+código de salida, últimas líneas), y `journalctl -u <unit>` te da el log
+completo. El flag `-f` lo sigue en vivo:
+
+```bash
+systemctl status sync-worker       # ¿por qué murió? código de salida y resumen
+journalctl -u sync-worker -n 100   # últimas 100 líneas
+journalctl -u sync-worker --since "10 min ago"
+```
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Sigue en vivo (follow) los logs de la unidad systemd llamada k3s."
+  accept={['journalctl -u k3s -f', 'journalctl -fu k3s']}
+  hints={["journalctl filtra por unidad con -u y sigue en vivo con -f.", "Combina ambos: journalctl -u k3s -f"]}
+  solution="journalctl -u k3s -f"
+/>
+
+Ya sabes cómo viven y mueren los procesos. En la próxima lección salimos del
+nodo: DNS, puertos y cómo aislar si una falla es de red, de TCP o de la app.

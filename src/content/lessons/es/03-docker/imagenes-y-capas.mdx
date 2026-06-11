@@ -1,0 +1,102 @@
+---
+title: Imágenes y capas
+description: Qué distingue una imagen de un contenedor y cómo el cache de capas hace que tus builds sean rápidos o lentos.
+objectives:
+  - Distinguir una imagen (plantilla inmutable) de un contenedor (instancia en ejecución)
+  - Explicar cómo Docker construye una imagen por capas y cuándo reusa el cache
+  - Ordenar las instrucciones de un Dockerfile para maximizar cache hits
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Una **imagen** es una plantilla inmutable: un sistema de archivos congelado más
+la metadata para arrancarlo. Un **contenedor** es una instancia en ejecución de
+esa imagen, con una capa de escritura encima. Una imagen es la clase; un
+contenedor es el objeto. De una misma imagen `ghcr.io/v-dev-cl/worker:master`
+puedes levantar diez contenedores idénticos, y cuando uno muere, la imagen sigue
+intacta para arrancar el siguiente.
+
+## Capas: una imagen es una pila
+
+Docker construye la imagen como una **pila de capas**, una por cada instrucción
+del Dockerfile que modifica el filesystem (`FROM`, `COPY`, `RUN`, `ADD`). Cada
+capa guarda solo el diff respecto a la anterior. Las capas son de solo lectura y
+se comparten entre imágenes: si dos servicios parten de `node:24-alpine`, esa
+capa base se baja y se guarda una sola vez en disco.
+
+Esto importa por dos razones: el **tamaño** (capas compartidas no se duplican) y
+el **cache de capas**, que decide cuán rápido es tu build.
+
+## El cache de capas y por qué el orden manda
+
+Cuando reconstruyes una imagen, Docker recorre el Dockerfile de arriba hacia
+abajo y, por cada instrucción, se pregunta: *¿cambió algo respecto al build
+anterior?* Si no cambió, reusa la capa cacheada y sigue. **Apenas una capa se
+invalida, todas las que vienen abajo se reconstruyen**, hayan cambiado o no. El
+cache es una racha que se corta en el primer cambio.
+
+¿Qué invalida una capa? Para `RUN`, que cambie el texto del comando. Para `COPY`
+y `ADD`, que cambie el contenido de los archivos copiados. Acá está la trampa
+clásica de un servicio NestJS:
+
+```dockerfile
+# MAL: cualquier cambio en el código invalida la instalación de deps
+FROM node:24-alpine
+RUN corepack enable
+WORKDIR /app
+COPY . .
+RUN pnpm install
+RUN pnpm build
+```
+
+Con este orden, cambiar una sola línea de `src/main.ts` invalida el `COPY . .`,
+y como `pnpm install` viene después, **se reinstalan todas las dependencias en
+cada build**, aunque el `package.json` no haya cambiado. En un servicio real eso
+son minutos perdidos en cada push.
+
+La regla: **copia primero lo que cambia poco, después lo que cambia mucho.** Las
+dependencias cambian rara vez; el código, en cada commit. Entonces:
+
+```dockerfile
+# BIEN: las deps se cachean hasta que cambie package.json o el lockfile
+FROM node:24-alpine
+RUN corepack enable
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+```
+
+Ahora `pnpm install` solo se vuelve a correr cuando cambia `package.json` o
+`pnpm-lock.yaml`. Editar `src/` invalida únicamente el `COPY . .` y el `build`
+finales — la capa pesada de dependencias se reusa desde el cache.
+
+## Inspeccionar tamaño e historia
+
+Para ver cuánto pesa cada imagen local usas `docker images`. Para ver de qué
+capas está hecha una imagen y qué instrucción creó cada una, usas
+`docker history`. Esto último es clave en el próximo paso, cuando ataquemos el
+tamaño de una imagen NestJS.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Lista las imágenes que tienes guardadas localmente."
+  accept={['docker images', 'docker image ls']}
+  hints={["Es el comando para listar imágenes, no contenedores.", "Hay dos formas: la corta 'docker images' y la moderna 'docker image ls'."]}
+  solution="docker images"
+/>
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Muestra la historia de capas de la imagen base node:24-alpine."
+  accept={[/^docker (image )?history node:24-alpine$/]}
+  hints={["El subcomando para ver capas se llama 'history'.", "Termina con el nombre de la imagen: node:24-alpine"]}
+  solution="docker history node:24-alpine"
+/>
+
+En la próxima lección usamos todo esto para transformar una imagen NestJS naive
+de 1.2 GB en una multi-stage de menos de 200 MB.

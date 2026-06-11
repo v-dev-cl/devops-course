@@ -1,0 +1,118 @@
+---
+title: Redes básicas para operar servicios
+description: DNS, TCP, puertos y cómo debuggear conectividad entre servicios.
+objectives:
+  - Seguir una resolución DNS de extremo a extremo
+  - Distinguir problemas de capa DNS, TCP y aplicación
+  - Usar ss, dig y curl para aislar fallas de conectividad
+  - Mapear puertos en escucha al proceso que los abrió
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+"El servicio no puede hablar con la API de búsqueda" es la falla más común que vas a
+debuggear, y casi siempre el problema está en una de tres capas: el nombre no
+resuelve (DNS), el puerto no acepta conexiones (TCP), o la app responde pero con
+error (HTTP). La habilidad clave no es saber comandos: es **aislar en qué capa
+está la falla** antes de tocar nada. Cada herramienta de esta lección prueba
+una capa distinta.
+
+## DNS de extremo a extremo
+
+Cuando tu servicio hace `connect("search-api.search.svc.cluster.local")`, ese
+nombre tiene que convertirse en una IP. El proceso:
+
+1. La app pregunta al **resolver** del sistema, configurado en
+   `/etc/resolv.conf` (qué servidor DNS usar, qué dominios de búsqueda
+   completar).
+2. En un nodo Linux normal, ese resolver apunta al DNS del sistema. **Dentro de
+   un pod de Kubernetes**, apunta a **CoreDNS**, el DNS interno del cluster.
+3. CoreDNS resuelve los nombres `*.svc.cluster.local` a la ClusterIP del
+   Service correspondiente, y delega al DNS de upstream para nombres externos.
+
+Ese `search cluster.local svc.cluster.local ...` en el `resolv.conf` del pod es
+lo que te deja escribir `search-api` a secas y que resuelva a
+`search-api.<namespace>.svc.cluster.local`. Si CoreDNS está caído o el Service no
+existe, la resolución falla y tu app ve un `ENOTFOUND` — eso es **capa DNS**, no
+capa de red.
+
+```bash
+cat /etc/resolv.conf            # qué servidor DNS y dominios de búsqueda uso
+dig +short search-api.search.svc.cluster.local
+nslookup kafka.broker.svc.cluster.local
+```
+
+`dig +short` te da solo la IP resultante; sin `+short` ves la respuesta DNS
+completa (qué servidor respondió, TTL, si hubo `NXDOMAIN`). Si `dig` resuelve
+pero tu app no, el problema no es DNS.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Resuelve el nombre DNS search-api.search.svc.cluster.local mostrando solo la IP."
+  accept={[/^dig (\+short )?[\w.-]+(\s\+short)?$/]}
+  hints={["La herramienta es dig.", "Usa +short para ver solo la IP: dig +short search-api.search.svc.cluster.local"]}
+  solution="dig +short search-api.search.svc.cluster.local"
+/>
+
+## Puertos y TCP
+
+Resuelta la IP, la app abre una conexión TCP a un **puerto**. Para que esa
+conexión funcione, algo del otro lado tiene que estar *escuchando* en ese
+puerto. La pregunta "¿quién está escuchando acá?" la responde `ss`:
+
+```bash
+ss -tlnp        # TCP, Listening, sin resolver nombres (n), con Proceso (p)
+```
+
+Cada flag tiene sentido: `-t` TCP, `-l` solo sockets en escucha, `-n` muestra
+números de puerto en vez de nombres (`:4000` en vez de `:http`), `-p` agrega el
+PID y nombre del proceso dueño del socket. Es el mapa directo entre un puerto y
+el proceso que lo abrió. Si esperas que tu worker escuche en 4000 y `ss -tlnp`
+no muestra nada en `:4000`, el proceso ni siquiera levantó el listener — eso es
+**capa app/arranque**, no red.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Averigua qué proceso está escuchando en el puerto 4000."
+  accept={['ss -tlnp | grep 4000', /^ss -tlnp \| grep (:)?4000$/, 'lsof -i :4000']}
+  hints={["ss -tlnp lista los puertos en escucha con su proceso; fíltralo con grep.", "ss -tlnp | grep 4000  (o lsof -i :4000)"]}
+  solution="ss -tlnp | grep 4000"
+/>
+
+## curl -v como debugger por capas
+
+`curl -v` (verbose) es el navaja suiza del debugging porque te muestra cada capa
+mientras avanza, y *dónde se detiene* te dice qué falló:
+
+```bash
+curl -v http://search-api.search.svc.cluster.local:8108/health
+```
+
+Lee la salida de arriba abajo:
+
+- `Trying 10.43.0.12:8108...` → **el DNS ya resolvió** (tienes una IP). Si nunca
+  llegas acá y ves `Could not resolve host`, la falla es DNS.
+- `Connected to ...` → **el TCP funciona**, hay algo escuchando. Si se queda en
+  "Trying..." y termina en `Connection refused` o timeout, es TCP/firewall: la
+  IP resuelve pero nadie acepta la conexión (proceso caído, puerto equivocado,
+  NetworkPolicy bloqueando).
+- `< HTTP/1.1 503 Service Unavailable` → **llegaste a la app** y respondió, pero
+  con error. Eso es capa aplicación: el nombre resuelve, el puerto acepta, pero
+  el servicio está mal por dentro.
+
+Esa progresión —resuelve, conecta, responde— es tu árbol de decisión. En vez de
+adivinar, `curl -v` te dice en qué peldaño se rompió la escalera. Para Kafka o
+bases de datos que no hablan HTTP, el equivalente es probar solo la conexión
+TCP con `nc -vz host puerto`.
+
+## El flujo completo de diagnóstico
+
+Junta todo en una rutina: `dig +short` (¿resuelve el nombre?) → `ss -tlnp` o
+`nc -vz` (¿hay alguien escuchando, acepta TCP?) → `curl -v` (¿la app responde
+bien?). Tres comandos, tres capas, y siempre sabes cuál descartaste.
+
+En la próxima lección cerramos el módulo con SSH, transferencia de archivos y
+triage de disco — las herramientas para operar la flota de forma remota.

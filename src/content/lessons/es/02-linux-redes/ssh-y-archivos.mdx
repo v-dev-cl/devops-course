@@ -1,0 +1,158 @@
+---
+title: SSH y manejo de archivos remotos
+description: Acceso seguro a servidores con SSH y transferencia de archivos para operar la flota.
+objectives:
+  - Configurar claves SSH y ~/.ssh/config con alias de host
+  - Usar scp y rsync para mover archivos de forma idempotente
+  - Aplicar permisos correctos a claves privadas y archivos sensibles
+  - Hacer triage de disco con df, du y ncdu, y empaquetar con tar
+  - Aprovechar túneles y port-forwarding para alcanzar servicios internos
+minutes: 16
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Operar una flota significa entrar a muchos servidores y mover archivos entre
+ellos sin equivocarte. SSH es la puerta de entrada; rsync es cómo mueves datos
+sin duplicar trabajo; y los permisos son lo que evita que filtres una clave
+privada. Esta lección es la caja de herramientas para tocar máquinas remotas
+con confianza.
+
+## Claves SSH y el agente
+
+SSH se autentica con un par de claves: una **privada** (queda en tu máquina,
+nunca sale) y una **pública** (la copias al servidor). Generas el par una vez:
+
+```bash
+ssh-keygen -t ed25519 -C "victor@laptop"   # crea ~/.ssh/id_ed25519[.pub]
+ssh-copy-id root@203.0.113.10               # instala la pública en el servidor
+```
+
+El **ssh-agent** mantiene tu clave desbloqueada en memoria para que no escribas
+la passphrase en cada conexión:
+
+```bash
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+```
+
+## ~/.ssh/config: alias de host
+
+Escribir `ssh root@203.0.113.10 -i ~/.ssh/id_ed25519 -p 2222` cada vez es
+absurdo. El archivo `~/.ssh/config` te deja darle un alias a cada servidor:
+
+```
+Host web-prod
+    HostName 203.0.113.10
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+
+Host db-prod
+    HostName 198.51.100.5
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+Ahora `ssh web-prod` y `ssh db-prod` resuelven a la configuración completa.
+Esos alias también funcionan con `scp` y `rsync` — defines el host una vez y lo
+usas en todas las herramientas. Es la diferencia entre recordar IPs y recordar
+nombres.
+
+## Túneles: alcanzar servicios internos
+
+Muchos servicios solo escuchan en el loopback del servidor por seguridad: el
+Mongo de producción acepta conexiones en `localhost:27017`, pero el puerto no
+está expuesto a internet. Un **túnel SSH** con port-forwarding local te abre ese
+servicio en tu máquina como si fuera local:
+
+```bash
+ssh -L 27017:localhost:27017 db-prod    # mapea tu :27017 al :27017 del host
+```
+
+Ahora `mongosh localhost:27017` desde tu laptop pega contra el Mongo remoto a
+través del túnel. El `-L` significa *local*: puerto tuyo, primero. Para dejar el
+túnel corriendo en background sin abrir una shell, usa `-fN`: `-f` lo manda al
+background, `-N` dice "no ejecutes ningún comando, solo reenvía":
+
+```bash
+ssh -fN -L 27017:localhost:27017 db-prod
+```
+
+Regla de cuándo usar qué: para servicios *dentro* de un cluster usa
+`kubectl port-forward`; para servicios a nivel de host (Mongo, Postgres, un
+panel interno en una VM) el túnel SSH es la herramienta.
+
+## Permisos: por qué SSH te rechaza la clave
+
+Linux modela permisos en tres tripletas —dueño, grupo, otros— cada una con read
+(4), write (2), execute (1). `chmod 600` significa "dueño lee y escribe, nadie
+más toca". SSH es **estricto a propósito**: si tu clave privada es legible por
+otros, rechaza usarla.
+
+```bash
+chmod 700 ~/.ssh           # solo tú entras al directorio
+chmod 600 ~/.ssh/id_ed25519       # clave privada: solo tú la lees
+chmod 644 ~/.ssh/id_ed25519.pub   # pública: otros pueden leerla
+chown -R victor:victor ~/.ssh     # tú eres el dueño de todo
+```
+
+`chmod` cambia *qué se puede hacer*; `chown` cambia *quién es el dueño*. Si
+copias una clave a un servidor y SSH sigue pidiéndote password, casi siempre es
+un permiso demasiado abierto en `~/.ssh` o en el archivo de la clave.
+
+## scp y rsync
+
+`scp` copia archivos por SSH, simple y directo. `rsync` es más inteligente:
+**solo transfiere las diferencias**, así que correrlo dos veces no recopia lo
+que ya está igual — es idempotente, y por eso es la herramienta preferida para
+sincronizar directorios o reanudar transferencias cortadas.
+
+```bash
+scp dump.sql db-prod:/tmp/                 # copia un archivo suelto
+rsync -avz ./dist/ web-prod:/opt/app/dist/     # sincroniza un directorio
+```
+
+Los flags de `rsync -avz`: `-a` (archive) preserva permisos, dueños y
+recursividad; `-v` verbose; `-z` comprime en tránsito. El detalle del slash:
+`./dist/` con slash final copia el *contenido*; `./dist` sin slash copia la
+*carpeta dentro del destino*. Agrega `--dry-run` para ver qué haría sin tocar
+nada — úsalo siempre la primera vez.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Sincroniza el directorio local ./dist/ hacia /opt/app/dist/ en el host web-prod usando rsync en modo archive y comprimido."
+  accept={[/^rsync -[a-z]*a[a-z]* .+ \w+@?[\w.-]*:.+$/, /^rsync -[a-z]+ .+ [\w.-]+:.+$/]}
+  hints={["rsync con flags -avz: archive, verbose, comprimido.", "rsync -avz ./dist/ web-prod:/opt/app/dist/"]}
+  solution="rsync -avz ./dist/ web-prod:/opt/app/dist/"
+/>
+
+## tar: empaquetar para mover
+
+Antes de transferir muchos archivos, conviene empaquetarlos en un solo
+`.tar.gz`. La regla mnemotécnica: **c**reate, e**x**tract, **t**ape (lista).
+
+```bash
+tar czf logs.tar.gz /var/log/services/   # c crear, z gzip, f archivo
+tar xzf logs.tar.gz                       # x extraer
+tar tzf logs.tar.gz                       # t listar contenido sin extraer
+```
+
+## Triage de disco: df, du, ncdu
+
+Un disco lleno tumba servicios de formas raras (logs que no se escriben, Mongo
+que no arranca). Tres niveles de zoom:
+
+```bash
+df -h                  # uso por filesystem: ¿cuál partición está al 100%?
+du -sh /var/log/*      # tamaño por carpeta dentro de la sospechosa
+ncdu /var             # explorador interactivo: navegas y ves qué pesa
+```
+
+La rutina: `df -h` te dice *qué partición* explotó, `du -sh` te dice *qué
+carpeta* dentro, y `ncdu` te deja navegar hasta el archivo culpable. Casi
+siempre son logs viejos o un volumen de Docker olvidado.
+
+Con esto cierras los fundamentos de Linux y redes. En el módulo de Docker
+empezamos a empaquetar tus servicios para que se muevan igual en cualquier
+máquina.

@@ -1,0 +1,101 @@
+---
+title: Estado y backends remotos
+description: Qué es el state de Terraform, por qué existe y cómo compartirlo de forma segura en equipo.
+objectives:
+  - Explicar qué guarda el archivo de state y por qué Terraform lo necesita
+  - Diagnosticar drift entre el state y la infraestructura real
+  - Configurar un backend remoto (S3 + DynamoDB) con bloqueo de estado
+  - Reconocer por qué el state nunca va a git y puede contener secretos
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Cuando corres `apply`, Terraform anota lo que creó en un archivo: el **state**
+(`terraform.tfstate`, JSON). Es el mapa que conecta lo que tú *declaraste*
+(`resource "hcloud_server" "k3s"`) con lo que existe *de verdad* en la API
+(servidor con ID `12345678`). Sin ese mapa, Terraform no sabría que ese servidor
+en tu proveedor de VPS es "el que yo manejo" y trataría de crear otro.
+
+## Qué hace el state, en concreto
+
+En cada `plan`, Terraform compara tres cosas: tu **configuración** (HCL), el
+**state** (lo que cree que existe) y la **realidad** (lo que la API reporta
+ahora). El diff sale de ahí. El state también guarda metadatos y dependencias
+entre recursos, para destruir y crear en el orden correcto.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Lista todos los recursos que Terraform tiene registrados en su state."
+  accept={['terraform state list', 'tofu state list']}
+  hints={["Hay un subcomando 'state' con varias operaciones de solo lectura.", "terraform state list"]}
+  solution="terraform state list"
+/>
+
+## Drift: cuando la realidad se desvía
+
+Si alguien entra a la consola de tu proveedor de VPS y cambia el firewall a mano, el state
+ya no refleja la realidad. Eso es **drift**. El propio `plan` lo detecta: al
+refrescar el estado contra la API, te mostrará que el atributo cambió y propondrá
+*volver a ponerlo* como dice tu HCL. Esa es la cura del click-ops: el código es
+la fuente de verdad, y Terraform reconcilia.
+
+## Por qué el state local rompe equipos
+
+Mientras trabajas solo, el `terraform.tfstate` en tu carpeta basta. En cuanto
+otra persona (o un pipeline) corre Terraform, hay problemas: cada quien tiene su
+copia, los applies se pisan y dos `apply` simultáneos corrompen el state. La
+solución es un **backend remoto**: el state vive en un lugar compartido y con
+**bloqueo** (lock) para que solo un `apply` corra a la vez.
+
+## El backend canónico: S3 + DynamoDB
+
+El patrón clásico en AWS es state en un bucket S3 y bloqueo en una tabla
+DynamoDB:
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket         = "miempresa-tfstate"
+    key            = "k3s/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "tf-locks"   # bloqueo: una sola escritura a la vez
+    encrypt        = true          # cifrado en reposo
+  }
+}
+```
+
+DynamoDB es el método **clásico** de locking. Versiones recientes de Terraform
+(1.10+) soportan locking nativo de S3 vía un archivo de lock, sin DynamoDB; pero
+el patrón con DynamoDB sigue siendo el más documentado y el que verás en código
+existente. Otras opciones: el **http backend** (lo expone, por ejemplo, GitLab
+para su state administrado) y **Terraform Cloud / HCP Terraform**, que tiene un
+tier gratuito con state remoto, locking y ejecución de planes incluidos.
+
+## El state contiene secretos
+
+Punto crítico de higiene: **el state guarda en texto plano los valores de tus
+recursos, incluidos los sensibles**. La contraseña inicial de un RDS, una llave
+generada, un token: si el recurso lo tiene, el state lo tiene. Marcar una
+variable como `sensitive` la oculta de los *logs*, pero **no** del state.
+
+De ahí dos reglas innegociables, que conectan con la higiene de secretos del
+resto del curso:
+
+- El state **nunca** va a git. Agrégalo al `.gitignore`. Filtrar un tfstate es
+  filtrar credenciales.
+- El backend remoto debe estar **cifrado y privado** (S3 con `encrypt = true`,
+  bucket privado, acceso por IAM).
+
+## Cirugía de state: con cuidado
+
+A veces necesitas reorganizar el state sin tocar la infraestructura. Tres
+comandos peligrosos: `terraform import` (adopta un recurso existente al state),
+`terraform state mv` (renombra/mueve una entrada) y `terraform state rm` (saca
+una entrada del state *sin destruir* el recurso real). Son el bisturí: útiles,
+pero un error te deja recursos huérfanos o un state que no cuadra. Haz backup
+del state antes y corre un `plan` después para verificar que quedó en cero.
+
+En la próxima lección dejamos de repetir HCL: **módulos** para reutilizar y
+**workspaces** para separar entornos.

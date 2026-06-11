@@ -1,0 +1,134 @@
+---
+title: Modules & Workspaces
+description: Reusing infrastructure with modules and separating environments with workspaces.
+objectives:
+  - Encapsulate resources in a module with inputs and outputs
+  - Compose infrastructure by calling local and registry modules
+  - Separate environments (dev/prod) with workspaces or per-environment directories
+  - Decide when a workspace is enough and when it does not scale
+minutes: 18
+---
+
+When you have to create the same kind of server for dev and for prod,
+copy-pasting the `hcloud_server` block is technical debt. A **module** is the
+answer: a directory of parametrized HCL you call several times with different
+values. In fact you already used a module: your root folder is the *root
+module*.
+
+## Anatomy of a module
+
+A module is just a folder with three conventional pieces: `variables.tf` (the
+inputs), `main.tf` (the resources), and `outputs.tf` (what it returns). For
+example, a local module `modules/hcloud-server`:
+
+```hcl
+# modules/hcloud-server/variables.tf
+variable "name"        { type = string }
+variable "server_type" {
+  type    = string
+  default = "cx22"
+}
+
+variable "location" {
+  type    = string
+  default = "nbg1"
+}
+
+# modules/hcloud-server/main.tf
+resource "hcloud_server" "this" {
+  name        = var.name
+  image       = "ubuntu-24.04"
+  server_type = var.server_type
+  location    = var.location
+}
+
+# modules/hcloud-server/outputs.tf
+output "ipv4" { value = hcloud_server.this.ipv4_address }
+```
+
+And you instantiate it per environment, changing only what differs:
+
+```hcl
+module "k3s_dev" {
+  source      = "./modules/hcloud-server"
+  name        = "k3s-dev"
+  server_type = "cx22"
+}
+
+module "k3s_prod" {
+  source      = "./modules/hcloud-server"
+  name        = "k3s-prod"
+  server_type = "cx42"   # bigger prod
+}
+
+output "prod_ip" {
+  value = module.k3s_prod.ipv4   # you access the module's outputs
+}
+```
+
+An input (`var.server_type`) goes in, an output (`module.k3s_prod.ipv4`) comes
+out. The module is a reusable black box.
+
+## Local modules vs registry modules
+
+The `source` can point to a local folder (`./modules/...`), a git repo, or the
+**Terraform Registry** (maintained public modules, like
+`terraform-aws-modules/vpc/aws`). Registry modules save you from reinventing a
+VPC with all its subnets, but **pin them to a version**:
+
+```hcl
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"   # without this, a new release can break your apply
+}
+```
+
+A module with no `version` auto-updates to the latest on every `init`, and
+that's drift disguised as an upgrade. Always pin it.
+
+## DRY without over-abstracting
+
+Classic temptation: turn *everything* into generic modules with twenty
+"just-in-case" variables. Don't. A module is justified when you'll instantiate
+the same pattern **two or more times** and the duplication genuinely hurts. For
+a resource that exists exactly once, a module only adds layers of indirection.
+Apply YAGNI: don't abstract until you have the second copy in front of you.
+
+## Workspaces: one state per environment
+
+**Workspaces** give you several parallel states with the *same* configuration.
+`terraform workspace new dev` creates a separate state; `terraform workspace
+select prod` switches to another. Inside the HCL you tell them apart with
+`terraform.workspace`:
+
+```hcl
+server_type = terraform.workspace == "prod" ? "cx42" : "cx22"
+```
+
+It sounds ideal for dev/prod, but it has a serious limit: **all workspaces share
+the same backend and the same code**. An `apply` from the wrong folder touches
+prod by accident; you can't grant different permissions per environment; and a
+bug in the HCL affects every workspace at once.
+
+## The industry recommendation
+
+The consensus for truly isolating prod is **separate per-environment
+directories**, each with its own backend (or cloud account), reusing a shared
+module:
+
+```text
+environments/
+  dev/   main.tf  → module "stack" { source = "../../modules/stack" ... }
+  prod/  main.tf  → different backend, different credentials
+modules/
+  stack/ ...
+```
+
+This way prod has its own isolated state, its own permissions, and a bounded
+blast radius: an `apply` in `dev/` can't touch prod. Workspaces are fine for
+ephemeral, low-risk variations (a test environment per feature branch), not as
+the boundary between dev and production.
+
+With this you close the module: you now know why IaC, how to write and apply
+Terraform, how to handle state safely, and how to structure reusable code
+without prod and dev stepping on each other.

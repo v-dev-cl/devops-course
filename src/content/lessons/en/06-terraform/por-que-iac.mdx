@@ -1,0 +1,76 @@
+---
+title: Why Infrastructure as Code
+description: What IaC solves versus click-ops and why it matters for your fleet.
+objectives:
+  - Contrast manual provisioning (click-ops) with declarative IaC
+  - Explain idempotency and why the same plan always converges to the same state
+  - Tell declarative tools (Terraform) apart from imperative ones (scripts)
+  - Version and review infrastructure changes like any other code
+minutes: 14
+---
+
+Imagine the VPS running your k3s cluster goes down. To bring it back by
+hand: you log into your VPS provider's console, create the server, pick the image,
+configure the firewall (was port 6443 open or closed?), point the DNS record at
+the new IP, install k3s... An hour of clicks, and half the configuration lives
+only in your memory. That's **click-ops**: provisioning infrastructure by hand
+through a graphical interface.
+
+## The problem with click-ops
+
+Click-ops has three sins. **It's not reproducible**: nobody can recreate exactly
+what you did, not even you in six months. **It leaves no record**: no diff, no
+history, you don't know who opened that port or why. And it produces **drift**:
+the real infrastructure diverges from what you think you have, because someone
+touched something in the console "real quick to test" and never documented it.
+
+Infrastructure as Code (IaC) attacks all three: you describe the infrastructure
+you want in text files, version them in git, and a tool makes it real.
+Recreating that VPS goes from an hour of clicks to a single `terraform apply`.
+
+## Declarative vs imperative
+
+There's a spectrum of how to "codify" infrastructure, from least to most
+declarative:
+
+- **Bash scripts** — imperative: you spell out *the steps* (`curl`, `if
+  exists`, `create`). You handle errors and idempotency by hand.
+- **Ansible** — declarative at the machine-configuration level, but oriented
+  toward "the state of a host" more than provisioning cloud resources.
+- **Terraform / OpenTofu** — declarative for *resources*: you describe the
+  final state ("I want a server with this image, this firewall, and this DNS")
+  and the tool figures out the steps to get there.
+- **Crossplane** — takes the declarative idea inside Kubernetes: you define
+  infrastructure as resources of the cluster itself.
+
+The key difference is **idempotency**: with Terraform you run `apply` once and it
+creates the server; you run it again and it does nothing, because the real state
+already matches what you declared. A naive bash script, by contrast, would try
+to create a second server. The same plan always converges to the same state,
+whether you run it once or ten times.
+
+## Where Terraform fits (and where it doesn't)
+
+Watch out for a common confusion: you're already doing IaC for your *workloads*.
+Your Kubernetes manifests in git, applied by ArgoCD, are declarative, versioned
+infrastructure. GitOps covers the application layer.
+
+Terraform lives in the **layer below**: what Kubernetes takes for granted. VMs,
+networks, DNS records, storage buckets, managed databases, the cluster itself.
+Things that aren't a Pod and that ArgoCD can't create. In your case: the VPS,
+its firewall, your domain's DNS, and tomorrow —when you adopt AWS— the VPC,
+the S3 buckets, the RDS instances. Terraform builds the ground; GitOps deploys
+on top.
+
+## OpenTofu: the fork
+
+In 2023 HashiCorp changed Terraform's license from open source (MPL) to the more
+restrictive Business Source License (BSL). The community responded with a fork:
+**OpenTofu**, now under the Linux Foundation and MPL-licensed. It's *drop-in
+compatible* with Terraform within the covered version range: same HCL syntax,
+same providers, same commands (`tofu` instead of `terraform`). In this module
+everything you see with `terraform` works the same with `tofu`. Which one to use
+is a licensing and governance decision, not a technical one.
+
+In the next lesson you write your first resource and walk the
+`init → plan → apply → destroy` cycle.

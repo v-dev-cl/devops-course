@@ -1,0 +1,53 @@
+---
+title: ¿Qué es DevOps?
+description: Qué problema resuelve DevOps y por qué no es un cargo ni una herramienta.
+objectives:
+  - Explicar el problema de los silos dev/ops y cómo DevOps lo ataca
+  - Describir el modelo CALMS y usarlo para evaluar un equipo
+  - Identificar qué partes de tu flujo actual ya son DevOps y cuáles no
+minutes: 12
+---
+
+DevOps no es un cargo, ni un equipo, ni Kubernetes. Es una forma de trabajar
+donde las mismas personas (o equipos que colaboran de verdad) construyen,
+despliegan y operan el software. La pregunta que responde es: **¿por qué
+tardamos semanas en poner en producción un cambio que tomó una hora escribir?**
+
+## El problema: los silos
+
+En el modelo clásico, desarrollo escribe código y "lo tira por encima de la
+muralla" a operaciones, que debe desplegarlo y mantenerlo vivo sin haberlo
+escrito. Los incentivos quedan cruzados: dev quiere cambiar rápido, ops quiere
+que nada cambie porque los cambios rompen producción. El resultado son
+releases gigantes, poco frecuentes y aterradoras.
+
+Si trabajas solo u operas tus propios servicios, igual tienes este problema en
+versión miniatura: cada paso manual entre tu commit y producción —compilar a
+mano, copiar un `.env`, correr `kubectl apply` desde tu máquina— es una
+muralla chica. DevOps consiste en derribarlas con automatización y feedback.
+
+## CALMS: una vara para medirse
+
+El modelo CALMS resume los cinco frentes de DevOps:
+
+- **C**ulture: los que escriben el código son responsables de que corra en
+  producción ("you build it, you run it").
+- **A**utomation: todo lo repetible se automatiza: build, test, deploy,
+  provisión de infraestructura.
+- **L**ean: lotes chicos. Es mejor desplegar 10 cambios chicos que 1 gigante.
+- **M**easurement: si no mides deploys, errores y tiempos de recuperación, no
+  sabes si mejoras.
+- **S**haring: el conocimiento de operación no vive en la cabeza de una
+  persona; vive en runbooks, dashboards y postmortems.
+
+## Aplícalo a tu caso
+
+Mira tu flujo actual con honestidad. Por ejemplo, un setup común: GitHub
+Actions compila la imagen y la sube a GHCR (automation ✔), pero el deploy es
+`skaffold deploy` manual desde tu notebook (automation ✘), no hay métricas de
+frecuencia de deploy (measurement ✘) y el conocimiento de "cómo se despliega
+esto" vive solo en tu memoria (sharing ✘). Ese gap entre CI automático y
+deploy manual es exactamente lo que vas a cerrar en los módulos 4 y 5.
+
+En la próxima lección vemos el ciclo de vida completo de un cambio, desde el
+commit hasta producción, y le ponemos nombre a cada etapa.

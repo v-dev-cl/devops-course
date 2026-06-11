@@ -1,0 +1,131 @@
+---
+title: Dockerfile multi-stage
+description: Cómo pasar de una imagen NestJS naive de 1.2 GB a una multi-stage de menos de 200 MB.
+objectives:
+  - Identificar por qué una imagen single-stage termina inflada con devDependencies y código fuente
+  - Escribir un Dockerfile multi-stage con etapas builder y runner separadas
+  - Explicar qué protege correr el proceso con USER node
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Una imagen no debería contener nada que no se use en producción. El compilador
+de TypeScript, las devDependencies, los tests, el código fuente `.ts` — nada de
+eso corre cuando tu servicio NestJS atiende requests; solo corre el `dist/`
+compilado y las dependencias de producción. El **multi-stage build** existe para
+quedarse exactamente con eso y botar el resto.
+
+## El antes: single-stage, 1.2 GB
+
+Así se ve un Dockerfile naive de un worker NestJS. Funciona, pero arrastra todo:
+
+```dockerfile
+# Dockerfile (single-stage) — ~1.2 GB
+FROM node:24
+WORKDIR /app
+
+# Copia TODO el repo: src, tests, configs, .git si no hay .dockerignore
+COPY . .
+
+# Instala dependencias de prod Y de desarrollo (typescript, jest, eslint...)
+RUN npm install -g pnpm && pnpm install
+
+# Compila TypeScript a dist/
+RUN pnpm build
+
+# La imagen final todavía contiene: node_modules completo, src/, el compilador
+CMD ["node", "dist/main.js"]
+```
+
+¿Por qué pesa 1.2 GB? Tres motivos acumulados:
+
+1. **Base gorda**: `node:24` (no `-alpine`) trae Debian completo: ~1 GB antes de
+   tu código.
+2. **devDependencies**: `pnpm install` instala TypeScript, jest, eslint y toda
+   la cadena de build, que no se usa en runtime.
+3. **Código fuente**: los `.ts` quedan dentro junto al `dist/` compilado, duplicando
+   el código.
+
+Además corre como `root`, lo que veremos que es un riesgo de seguridad.
+
+## El después: multi-stage, menos de 200 MB
+
+La idea: una etapa `base` común, una etapa **prod-deps** que instala solo las
+dependencias de producción, una etapa **build** que compila con todo el
+toolchain, y un **runner** limpio que copia los artefactos finales. La imagen que
+publicas es únicamente la última etapa.
+
+```dockerfile
+# ---- Etapa base: común a prod-deps y build ----
+FROM node:24-alpine AS base
+RUN corepack enable
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+
+# ---- Etapa prod-deps: solo dependencias de producción ----
+FROM base AS prod-deps
+RUN pnpm install --prod --frozen-lockfile
+
+# ---- Etapa build: todas las deps + compilación ----
+FROM base AS build
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+
+# ---- Etapa runner: limpia, mínima, no-root ----
+FROM node:24-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Copia SOLO los artefactos de runtime, cada uno de su etapa
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY package.json ./package.json
+
+# node:24-alpine ya trae un usuario 'node' sin privilegios
+USER node
+
+EXPOSE 3000
+CMD ["node", "dist/main.js"]
+```
+
+La imagen final no contiene `src/`, ni TypeScript, ni jest: solo `node_modules`
+de producción y `dist/`. Pasamos de ~1.2 GB a menos de 200 MB. El compilador
+vivió y murió en la etapa `build`; esa etapa nunca se publica.
+
+¿Por qué una etapa `prod-deps` separada en vez de `pnpm install` seguido de
+`pnpm prune --prod`? Porque la etapa `prod-deps` produce un árbol de producción
+**determinista** instalado directo desde el lockfile: lo que pides es exactamente
+lo que obtienes. El `prune --prod` parte de un `node_modules` completo y le quita
+las devDependencies después, y arrastró bugs de hoisting (devDependencies izadas
+que no se eliminaban del todo en versiones de pnpm anteriores a la 10.14). La
+propia documentación de Docker de pnpm usa justamente esta forma de etapas
+separadas, así que es el patrón a seguir.
+
+## Qué copiar y por qué USER node
+
+La instrucción `COPY --from` es el corazón del patrón: trae archivos de una etapa
+anterior sin arrastrar su filesystem completo. Copia tres cosas, cada una de su
+etapa: `node_modules` (desde `prod-deps`, ya solo de producción), `dist/` (desde
+`build`, el código compilado) y `package.json` (que Node lee para el `type` y la
+metadata). No copies `src/` — sería peso muerto.
+
+`USER node` hace que el proceso corra como un usuario sin privilegios en vez de
+`root`. Esto importa porque si un atacante logra ejecución de código dentro del
+contenedor, como `root` puede escribir en cualquier parte del filesystem del
+contenedor e intentar escapar; como `node`, queda limitado. Es defensa en
+profundidad: barata de aplicar, valiosa cuando algo sale mal. La imagen
+`node:24-alpine` ya trae el usuario `node` creado, así que solo lo activas.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Construye la imagen multi-stage etiquetándola como worker:slim desde el Dockerfile del directorio actual."
+  accept={[/^docker build -t worker:slim \.$/]}
+  hints={["El comando es 'docker build'.", "Usa -t para el tag y un '.' final para el contexto de build."]}
+  solution="docker build -t worker:slim ."
+/>
+
+En la próxima lección bajamos del Dockerfile a orquestar varios contenedores
+juntos en local con docker compose.

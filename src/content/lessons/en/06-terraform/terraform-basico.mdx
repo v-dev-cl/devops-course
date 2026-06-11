@@ -1,0 +1,138 @@
+---
+title: Terraform Basics — the plan/apply cycle
+description: Providers, resources, and the init/plan/apply/destroy cycle that defines the workflow.
+objectives:
+  - Declare a provider and a resource in HCL
+  - Walk the init, plan, apply, and destroy cycle and what each step does
+  - Read a plan to anticipate what gets created, changed, or destroyed
+  - Use variables and outputs to parametrize and expose values
+minutes: 20
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Terraform is written in **HCL** (HashiCorp Configuration Language) and revolves
+around three blocks: **providers** (the plugin that talks to an API: a VPS
+provider, AWS, Cloudflare), **resources** (the things you want to exist), and **data
+sources** (things that already exist and you want to read). We'll start with an
+example that runs on your machine with no cloud account, then look at a real one.
+
+## Your first resource, no cloud
+
+The `random` provider touches no external service: it generates values. It's
+perfect for understanding the cycle without spending money or credentials.
+Create a `main.tf` file:
+
+```hcl
+terraform {
+  required_providers {
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
+  }
+}
+
+resource "random_pet" "server_name" {
+  length    = 2
+  separator = "-"
+}
+
+output "name" {
+  value = random_pet.server_name.id
+}
+```
+
+Three things: the `terraform` block declares which providers you need (and pins
+them to a version range); the `resource` declares *what* you want (a random name
+like `quiet-rabbit`); the `output` exposes a value when it finishes.
+
+## The init → plan → apply → destroy cycle
+
+**`init`** downloads the declared providers and prepares the directory. You run
+it once at the start and again whenever you add a provider.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Initialize the Terraform directory so it downloads the random provider."
+  accept={['terraform init', 'tofu init']}
+  hints={["It's the first command of the cycle; it downloads providers.", "terraform init (or tofu init if you use OpenTofu)."]}
+  solution="terraform init"
+/>
+
+**`plan`** compares what you declared against the state and shows you the diff
+*without touching anything*. It's your safety net: read it before you apply.
+Saving it to a file with `-out` guarantees the `apply` does exactly what was
+planned.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Generate a plan and save it to a file named tfplan to apply it later."
+  accept={[/^(terraform|tofu) plan( -out[= ]\S+)?$/]}
+  hints={["plan takes an -out flag to save the result.", "terraform plan -out tfplan"]}
+  solution="terraform plan -out tfplan"
+/>
+
+**`apply`** executes the changes. Without a saved plan it shows the diff again
+and asks for confirmation (`yes`). With `apply tfplan` it applies the
+already-approved plan without asking again. **`destroy`** removes everything
+Terraform created: great for ephemeral environments, dangerous in prod.
+
+## Reading a plan
+
+A plan's diff uses symbols you must recognize at a glance:
+
+```text
+  + create        # brand-new resource
+  ~ update in-place   # changes an attribute without recreating
+  - destroy        # gets removed
+-/+ destroy and then create  # recreation! loses the current resource
+```
+
+The most dangerous is `-/+`: it means a change forces a *destroy and re-create*
+(for example, changing a server's region). For a database, that's data loss.
+Always read the final summary (`Plan: 1 to add, 0 to change, 1 to destroy`)
+before you type `yes`.
+
+## A real example: a server on hcloud (Hetzner Cloud), a popular VPS provider, as an example
+
+With real credentials the pattern is identical, only the provider changes. Here
+come **variables** (parametrizable inputs) and a **data source** (reading
+something that already exists, like your SSH key):
+
+```hcl
+variable "hcloud_token" {
+  type      = string
+  sensitive = true   # not printed in logs or in the plan
+}
+
+provider "hcloud" {
+  token = var.hcloud_token
+}
+
+data "hcloud_ssh_key" "mine" {
+  name = "victor-laptop"
+}
+
+resource "hcloud_server" "k3s" {
+  name        = "k3s-node-1"
+  image       = "ubuntu-24.04"
+  server_type = "cx22"
+  location    = "nbg1"
+  ssh_keys    = [data.hcloud_ssh_key.mine.id]
+}
+
+output "ip" {
+  value = hcloud_server.k3s.ipv4_address
+}
+```
+
+The token goes in as a `sensitive` variable (you pass it via
+`TF_VAR_hcloud_token` or a `*.tfvars` file kept out of git), never hardcoded.
+The same `init/plan/apply` cycle you practiced with `random` creates a real VPS
+here.
+
+In the next lesson we open the black box: the **state**, the file where
+Terraform records what it created and how it maps to reality.

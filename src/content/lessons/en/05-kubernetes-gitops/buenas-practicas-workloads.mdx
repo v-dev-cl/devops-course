@@ -1,0 +1,179 @@
+---
+title: Workload good practices
+description: The checklist your manifests should pass — probes, requests/limits, securityContext, PodDisruptionBudgets, and label conventions.
+objectives:
+  - Distinguish liveness from readiness probe and what each failure causes
+  - Configure resource requests and limits and understand their effect on a shared k3s node
+  - Harden a Pod with securityContext (runAsNonRoot) and protect it with a PodDisruptionBudget
+  - Apply recommended label conventions
+minutes: 18
+---
+
+A manifest that "works" on your machine is not the same as a manifest ready for a
+shared k3s with 34 other services. This lesson is the checklist your Deployments
+should pass before a GitOps agent applies them without you watching. At the end we
+leave a complete "good" Deployment that brings it all together.
+
+## Liveness vs. readiness: two different questions
+
+The two probes look alike but answer opposite questions, and confusing them causes
+incidents:
+
+- The **liveness probe** asks: *is this container alive or did it hang?* If it
+  **fails**, kubelet **restarts the container**. It is for deadlocks and zombie
+  processes. A misconfigured liveness (too-short timeout, heavy endpoint) makes k8s
+  restart healthy pods in a loop — worse than not having one.
+- The **readiness probe** asks: *can this pod take traffic right now?* If it
+  **fails**, the pod is **removed from the Service's endpoints** (stops receiving
+  traffic) but is **not** restarted. It is for slow starts or dependencies that are
+  not ready yet (waiting on Mongo, warming a cache).
+
+The mental rule: **liveness restarts, readiness pulls out of rotation.** A NestJS
+service that takes 8 seconds to connect to Mongo needs readiness so it does not get
+requests before it is ready; if you set that as liveness, k8s would restart it
+forever because it never finishes starting within the threshold.
+
+```yaml
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+```
+
+## Requests and limits: the contract with the scheduler
+
+Each container declares how much CPU and memory it requests and how much it may use
+at most:
+
+- **requests**: what the container *needs guaranteed*. The **scheduler** uses the
+  request to decide which node the pod fits on. If you set **no** requests, the
+  scheduler assumes the pod needs nothing and packs it anywhere — and on a shared k3s
+  node that leads to **overcommit**: you stuff in more pods than the node can take,
+  and when they all ask for real RAM, the kernel starts killing processes (OOM).
+- **limits**: the ceiling. If the container exceeds the **memory limit**, it is
+  killed with OOMKilled. If it exceeds the **CPU limit**, it is *throttled*: not
+  killed, just given fewer cycles, and it gets slow.
+
+```yaml
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+```
+
+On the course's k3s, where dozens of services share a few nodes, **not setting requests is
+the #1 cause of instability**: a service with an unbounded memory leak can take down
+its node neighbors. Requests and limits turn "I hope it fits" into a contract the
+scheduler respects.
+
+## securityContext: run as non-root
+
+By default many images run as root *inside* the container. If a vulnerability lets
+someone escape the container, that root can become root on the node. The
+`securityContext` closes that door:
+
+```yaml
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+```
+
+`runAsNonRoot: true` makes k8s **refuse to start the pod** if the image would run as
+root — it forces you to build images with `USER node`. It is defense in depth: even
+if someone compromises the process, they do not have root.
+
+## PodDisruptionBudget: protect availability
+
+A **PodDisruptionBudget** (PDB) tells k8s how many pods of a service may be down *at
+once* during voluntary disruptions (draining a node for maintenance, a cluster
+upgrade). Without a PDB, draining a node can take down all of a service's replicas at
+once:
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sample-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: sample-app }
+```
+
+`minAvailable: 1` guarantees at least one pod keeps serving while k8s rearranges the
+rest. (For it to make sense, the Deployment must have more than one replica.)
+
+## Label conventions
+
+Labels are not decoration: Services and PDBs select pods by them, and you use them to
+filter (`kubectl get pods -l app=sample-app`). Kubernetes recommends a set of
+`app.kubernetes.io/*` labels:
+
+```yaml
+      labels:
+        app.kubernetes.io/name: sample-app
+        app.kubernetes.io/instance: sample-app-dev
+        app.kubernetes.io/version: "1.4.2"
+        app.kubernetes.io/managed-by: argocd
+```
+
+What matters is **consistency**: pick a scheme and use it across every service, so
+that filtering, grouping in dashboards, and selecting with Services are predictable
+across dozens of services.
+
+## The complete "good" Deployment
+
+All together:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+  labels:
+    app.kubernetes.io/name: sample-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: sample-app }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sample-app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: app
+          image: ghcr.io/v-dev-cl/sample-app:sha-a1b2c3d
+          ports: [{ containerPort: 3000 }]
+          envFrom:
+            - configMapRef: { name: sample-app-config }
+            - secretRef: { name: sample-app-secrets }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+```
+
+This is the standard we will bring manifests up to before putting them under GitOps.
+In the next lesson we build the Kustomize structure that keeps base and overlays
+without duplicating this YAML 35 times.

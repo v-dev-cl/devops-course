@@ -1,0 +1,132 @@
+---
+title: Módulos y workspaces
+description: Reutilizar infraestructura con módulos y separar entornos con workspaces.
+objectives:
+  - Encapsular recursos en un módulo con inputs y outputs
+  - Componer infraestructura llamando módulos locales y del registry
+  - Separar entornos (dev/prod) con workspaces o directorios por entorno
+  - Decidir cuándo un workspace es suficiente y cuándo no escala
+minutes: 18
+---
+
+Cuando tienes que crear el mismo tipo de servidor para dev y para prod, copiar y
+pegar el bloque `hcloud_server` es deuda técnica. Un **módulo** es la respuesta:
+un directorio con HCL parametrizado que llamas varias veces con distintos
+valores. De hecho ya usaste un módulo: tu carpeta raíz es el *root module*.
+
+## Anatomía de un módulo
+
+Un módulo es solo una carpeta con tres piezas convencionales: `variables.tf`
+(los inputs), `main.tf` (los recursos) y `outputs.tf` (lo que devuelve). Por
+ejemplo, un módulo local `modules/hcloud-server`:
+
+```hcl
+# modules/hcloud-server/variables.tf
+variable "name"        { type = string }
+variable "server_type" {
+  type    = string
+  default = "cx22"
+}
+
+variable "location" {
+  type    = string
+  default = "nbg1"
+}
+
+# modules/hcloud-server/main.tf
+resource "hcloud_server" "this" {
+  name        = var.name
+  image       = "ubuntu-24.04"
+  server_type = var.server_type
+  location    = var.location
+}
+
+# modules/hcloud-server/outputs.tf
+output "ipv4" { value = hcloud_server.this.ipv4_address }
+```
+
+Y lo instancias para cada entorno, cambiando solo lo que difiere:
+
+```hcl
+module "k3s_dev" {
+  source      = "./modules/hcloud-server"
+  name        = "k3s-dev"
+  server_type = "cx22"
+}
+
+module "k3s_prod" {
+  source      = "./modules/hcloud-server"
+  name        = "k3s-prod"
+  server_type = "cx42"   # prod más grande
+}
+
+output "prod_ip" {
+  value = module.k3s_prod.ipv4   # accedes a los outputs del módulo
+}
+```
+
+Un input (`var.server_type`) entra, un output (`module.k3s_prod.ipv4`) sale. El
+módulo es una caja negra reusable.
+
+## Módulos locales vs del registry
+
+El `source` puede apuntar a una carpeta local (`./modules/...`), a un repo git,
+o al **Terraform Registry** (módulos públicos mantenidos, como
+`terraform-aws-modules/vpc/aws`). Los del registry te ahorran reinventar una VPC
+con todas sus subredes, pero **pínalos a una versión**:
+
+```hcl
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"   # sin esto, una versión nueva puede romperte el apply
+}
+```
+
+Un módulo sin `version` se actualiza solo a lo último cada `init`, y eso es drift
+disfrazado de upgrade. Pínalo siempre.
+
+## DRY sin sobre-abstraer
+
+Tentación clásica: convertir *todo* en módulos genéricos con veinte variables
+"por si acaso". No. Un módulo se justifica cuando vas a instanciar el mismo
+patrón **dos o más veces** y la duplicación duele de verdad. Para un recurso que
+existe una sola vez, el módulo solo agrega capas de indirección. Aplica YAGNI:
+no abstraigas hasta tener la segunda copia enfrente.
+
+## Workspaces: un state por entorno
+
+Los **workspaces** te dan varios states paralelos con la *misma*
+configuración. `terraform workspace new dev` crea un state separado; `terraform
+workspace select prod` cambia a otro. Dentro del HCL distingues con
+`terraform.workspace`:
+
+```hcl
+server_type = terraform.workspace == "prod" ? "cx42" : "cx22"
+```
+
+Suena ideal para dev/prod, pero tiene un límite serio: **todos los workspaces
+comparten el mismo backend y el mismo código**. Un `apply` desde la carpeta
+equivocada toca prod sin querer; no puedes dar permisos distintos por entorno; y
+un error en el HCL afecta a todos los workspaces a la vez.
+
+## La recomendación de la industria
+
+El consenso para aislar prod de verdad es **directorios separados por entorno**,
+cada uno con su propio backend (o cuenta cloud), reusando un módulo común:
+
+```text
+environments/
+  dev/   main.tf  → module "stack" { source = "../../modules/stack" ... }
+  prod/  main.tf  → backend distinto, credenciales distintas
+modules/
+  stack/ ...
+```
+
+Así prod tiene su state aislado, sus permisos propios y un blast radius acotado:
+un `apply` en `dev/` no puede tocar prod. Los workspaces quedan bien para
+variaciones efímeras y de bajo riesgo (un entorno de prueba por feature-branch),
+no como la frontera entre dev y producción.
+
+Con esto cierras el módulo: ya sabes por qué IaC, cómo escribir y aplicar
+Terraform, cómo manejar el state de forma segura y cómo estructurar código
+reusable sin que prod y dev se pisen.

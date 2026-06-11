@@ -1,0 +1,72 @@
+---
+title: El ciclo de vida de un cambio
+description: Las ocho etapas que recorre un cambio desde la idea hasta producción y cómo monitorearlo.
+objectives:
+  - Nombrar y ordenar las ocho etapas del ciclo de entrega
+  - Mapear cada etapa a una herramienta concreta de tu stack
+  - Distinguir "release" de "deploy" y explicar qué es promover entre entornos
+minutes: 12
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Todo cambio de software recorre el mismo camino, lo hagas explícito o no. Si lo
+nombras, lo puedes automatizar y medir. El ciclo de entrega tiene ocho etapas:
+**plan → code → build → test → release → deploy → operate → monitor**. No es un
+proceso lineal de una sola vez: es un loop que se repite con cada commit.
+
+## Las ocho etapas, mapeadas a tu stack
+
+Las etapas son abstractas, pero cada una se concreta en una herramienta. Para un
+stack típico de decenas de microservicios NestJS sobre k3s on-prem se ven así:
+
+- **Plan**: decides qué construir. Herramienta: GitHub issues o un tablero.
+- **Code**: escribes el código y lo versionas. Herramienta: git, con `branch` y
+  `commit`.
+- **Build**: empaquetas el servicio en una imagen. Herramienta: GitHub Actions
+  construyendo la imagen Docker.
+- **Test**: validas el cambio antes de soltarlo. Herramienta: jest corriendo en
+  el pipeline.
+- **Release**: marcas una versión de la imagen como candidata a producción y la
+  publicas. Herramienta: push a GHCR.
+- **Deploy**: pones esa versión a correr en un entorno. Herramienta: `skaffold
+  deploy` (hoy manual desde tu notebook) o `kubectl apply`.
+- **Operate**: mantienes el servicio vivo. Herramienta: k3s reprogramando pods,
+  reiniciando los que fallan.
+- **Monitor**: observas cómo se comporta en producción. Herramienta: **nada
+  todavía** — este hueco lo llenamos en el módulo 7.
+
+Fíjate en el último punto: en muchos stacks reales el loop se corta en
+`monitor`. Sin monitoreo no cierras el ciclo, porque no tienes feedback de
+producción que alimente el próximo `plan`.
+
+## Release no es lo mismo que deploy
+
+Es la confusión más común. **Release** es publicar un artefacto versionado —tu
+imagen `mi-servicio` queda disponible en GHCR para que alguien la use—.
+**Deploy** es poner ese artefacto a correr en un entorno concreto. Puedes hacer
+release de una imagen y desplegarla horas después, o desplegar la misma release
+en tres entornos distintos. Separarlos te permite, por ejemplo, promover a
+producción exactamente la misma imagen que ya probaste en staging, sin
+reconstruir nada.
+
+## Entornos y promoción
+
+Un **entorno** es una instancia completa donde corre tu software con su propia
+configuración: típicamente **dev**, **staging** y **prod**. **Promover** es
+mover una misma release de un entorno al siguiente, ganando confianza en cada
+paso: si la imagen sobrevive a staging, promueves esa imagen idéntica a prod. El
+antipatrón es reconstruir la imagen para cada entorno, porque entonces lo que
+pruebas no es lo que despliegas.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Despliega el estado actual de tu servicio a k3s con skaffold (el paso 'deploy' del ciclo)."
+  accept={[/^skaffold\s+deploy/]}
+  hints={["La etapa se llama 'deploy'.", "El subcomando de skaffold para desplegar es 'deploy'."]}
+  solution="skaffold deploy"
+/>
+
+En la próxima lección dejamos de describir el ciclo y empezamos a medirlo: las
+cuatro métricas DORA que te dicen si tu entrega realmente está mejorando.
