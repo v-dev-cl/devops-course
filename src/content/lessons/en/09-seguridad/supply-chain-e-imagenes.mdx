@@ -1,0 +1,137 @@
+---
+title: Supply chain and images
+description: Trivy as a severity gate, SBOM, and image signing with cosign.
+objectives:
+  - Turn image scanning into a severity gate in CI
+  - Generate an SBOM and explain what it's for when the next Log4Shell drops
+  - Sign and verify images with cosign and understand what the signature proves
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+import LabCheck from '@/components/LabCheck';
+
+In module 3 (`seguridad-de-imagenes`) you hardened the image from the inside:
+non-root user, minimal base, no secrets in the layers. This lesson picks that
+scan up and levels it up: turning it into a pipeline **gate**, knowing **what's**
+inside the image, and being able to prove **who built it**.
+
+## Trivy as a severity gate
+
+Scanning an image and reading the CVE list is informative, but it stops nothing
+on its own. To be a gate, the scan has to **fail the build** when something
+serious shows up. Trivy does this with two flags:
+
+- `--exit-code 1` makes the command exit with an error code if it finds
+  vulnerabilities. That non-zero exit code is what fails the CI step and blocks
+  the merge.
+- `--severity HIGH,CRITICAL` filters: only the severities you list count toward
+  the gate. Starting with `HIGH,CRITICAL` is the sane default: you block what
+  actually matters without drowning in hundreds of `LOW` findings nobody will fix
+  today (it's the same alert-fatigue problem from module 7 — a gate that's too
+  noisy ends up ignored).
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Scan the image ghcr.io/v-dev-cl/worker:main and make the build fail if there are HIGH or CRITICAL CVEs."
+  accept={[ /^trivy image --exit-code 1 --severity (HIGH,CRITICAL|CRITICAL,HIGH) \S+$/ ]}
+  hints={["Use 'trivy image' with --exit-code 1.", "Filter severities with --severity HIGH,CRITICAL before the image name."]}
+  solution="trivy image --exit-code 1 --severity HIGH,CRITICAL ghcr.io/v-dev-cl/worker:main"
+/>
+
+## SBOM: knowing what's in the image
+
+An **SBOM** (Software Bill of Materials) is the full inventory of your image:
+every package, library, and version that came inside, direct and transitive. You
+generate it with Trivy (`trivy image --format cyclonedx --output sbom.json
+ghcr.io/v-dev-cl/worker:main`) or with **syft**; the standard formats are
+**CycloneDX** and **SPDX**.
+
+Why keep an inventory of something you already had? For the bad day. When the
+next critical CVE drops —the next Log4Shell— the urgent question is "which of my
+dozens of services uses it, and in which version?". If you saved the SBOM of
+every image you ship, the answer is a `grep`. Without an SBOM, it's hours of
+archaeology while the clock runs. The scan tells you which CVEs are known
+**today**; the SBOM lets you answer for the ones discovered **tomorrow**.
+
+## Signing with cosign: provenance, not absence of bugs
+
+The scan tells you what vulnerabilities the image has. The **signature** answers
+a different question: is this image really the one your pipeline built, with
+nobody having swapped it along the way? **cosign** (from Sigstore) signs an image
+by its **digest** and stores the signature as another OCI artifact next to it in
+the registry.
+
+The local keypair flow —the one you run in the lab— is:
+
+```bash
+cosign generate-key-pair                      # creates cosign.key and cosign.pub
+cosign sign --key cosign.key ghcr.io/v-dev-cl/worker:main
+cosign verify --key cosign.pub ghcr.io/v-dev-cl/worker:main
+```
+
+In production the **keyless** mode is preferred: instead of a key you have to
+guard, cosign uses your **OIDC** identity (the GitHub Actions runner's, for
+example) against Sigstore's Fulcio and Rekor, with no long-lived key. The lab
+runs with a keypair so you see the pieces; the principle is identical.
+
+The critical part, and a common misconception: **signing proves provenance and
+integrity, not that the image is free of vulnerabilities**. A signed image can be
+riddled with CVEs; the signature only certifies *who* built it and that it *wasn't
+altered*. That's why signing and scanning complement each other: the scan is the
+quality gate, the signature is the chain of custody.
+
+## The lab, local first
+
+Before touching CI, run all three steps by hand against the sample app image:
+
+1. Gate the scan: `trivy image --exit-code 1 --severity HIGH,CRITICAL ghcr.io/v-dev-cl/worker:main` and check the exit code.
+2. Generate the SBOM: `trivy image --format cyclonedx --output sbom.json ghcr.io/v-dev-cl/worker:main`.
+3. Sign locally: `cosign generate-key-pair`, then `cosign sign --key cosign.key …` and verify with `cosign verify --key cosign.pub …`.
+
+<LabCheck client:load stepId="09-seguridad/lab-4/step-1" locale="en" />
+
+## The CI job
+
+In the pipeline the three chain together: the scan gates, the SBOM is uploaded as
+an artifact, and cosign signs the already-published image (keyless via OIDC,
+hence the `permissions: id-token: write`).
+
+```yaml
+  supply-chain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      # Gate: fail the build if there are HIGH or CRITICAL
+      - name: Scan image (gate)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ghcr.io/v-dev-cl/worker:main
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+      # SBOM as an artifact you keep for the next CVE day
+      - name: Generate SBOM
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ghcr.io/v-dev-cl/worker:main
+          format: cyclonedx
+          output: sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+      # Keyless signing with the runner's OIDC identity
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign image
+        run: cosign sign --yes ghcr.io/v-dev-cl/worker:main
+```
+
+With this, the image that reaches production is **gated** (no known serious
+CVEs), **inventoried** (SBOM saved), and **signed** (verifiable provenance). In
+the next lesson we codify the rules themselves: policy-as-code with Checkov and
+Kyverno.

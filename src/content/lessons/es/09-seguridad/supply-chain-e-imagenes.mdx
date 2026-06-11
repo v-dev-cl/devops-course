@@ -1,0 +1,137 @@
+---
+title: Supply chain e imágenes
+description: Trivy como gate por severidad, SBOM y firma de imágenes con cosign.
+objectives:
+  - Convertir el escaneo de imágenes en un gate de CI por severidad
+  - Generar un SBOM y explicar para qué sirve cuando aparece el próximo Log4Shell
+  - Firmar y verificar imágenes con cosign y entender qué prueba la firma
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+import LabCheck from '@/components/LabCheck';
+
+En el módulo 3 (`seguridad-de-imagenes`) endureciste la imagen desde adentro:
+usuario no-root, base mínima, sin secretos en las capas. Esta lección retoma ese
+escaneo y lo sube de nivel: convertirlo en un **gate** del pipeline, saber **qué
+hay** dentro de la imagen, y poder probar **quién la construyó**.
+
+## Trivy como gate por severidad
+
+Escanear una imagen y mirar la lista de CVEs es informativo, pero no frena nada
+por sí solo. Para que sea un gate, el escaneo tiene que **fallar el build**
+cuando aparece algo grave. Trivy lo hace con dos flags:
+
+- `--exit-code 1` hace que el comando termine con código de error si encuentra
+  vulnerabilidades. Ese exit code distinto de cero es lo que hace fallar el step
+  de CI y bloquea el merge.
+- `--severity HIGH,CRITICAL` filtra: solo las severidades que listas cuentan para
+  el gate. Empezar con `HIGH,CRITICAL` es lo razonable: bloqueas lo que de verdad
+  importa sin ahogarte en cientos de `LOW` que nadie va a arreglar hoy (es el
+  mismo problema de fatiga de alertas del módulo 7 — un gate demasiado ruidoso se
+  termina ignorando).
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Escanea la imagen ghcr.io/v-dev-cl/worker:main y haz que falle el build si hay CVEs HIGH o CRITICAL."
+  accept={[ /^trivy image --exit-code 1 --severity (HIGH,CRITICAL|CRITICAL,HIGH) \S+$/ ]}
+  hints={["Usa 'trivy image' con --exit-code 1.", "Filtra severidades con --severity HIGH,CRITICAL antes del nombre de la imagen."]}
+  solution="trivy image --exit-code 1 --severity HIGH,CRITICAL ghcr.io/v-dev-cl/worker:main"
+/>
+
+## SBOM: saber qué hay en la imagen
+
+Un **SBOM** (Software Bill of Materials) es el inventario completo de tu imagen:
+cada paquete, librería y versión que vino dentro, directos y transitivos. Lo
+generas con Trivy (`trivy image --format cyclonedx --output sbom.json
+ghcr.io/v-dev-cl/worker:main`) o con **syft**; los formatos estándar son
+**CycloneDX** y **SPDX**.
+
+¿Para qué sirve un inventario que ya tenías? Para el día malo. Cuando cae la
+próxima CVE crítica —el próximo Log4Shell— la pregunta urgente es "¿cuál de mis
+decenas de servicios la usa, y en qué versión?". Si guardaste el SBOM de cada
+imagen que shipeas, la respuesta es un `grep`. Sin SBOM, es una arqueología de
+horas mientras el reloj corre. El escaneo te dice qué CVEs se conocen **hoy**; el
+SBOM te deja responder por las que se descubran **mañana**.
+
+## Firmar con cosign: procedencia, no ausencia de bugs
+
+El escaneo dice qué vulnerabilidades tiene la imagen. La **firma** responde otra
+pregunta distinta: ¿esta imagen es realmente la que construyó tu pipeline, sin
+que nadie la haya cambiado por el camino? **cosign** (de Sigstore) firma una
+imagen por su **digest** y guarda la firma como otro artefacto OCI junto a ella
+en el registry.
+
+El flujo con par de llaves local —el que corres en el lab— es:
+
+```bash
+cosign generate-key-pair                      # crea cosign.key y cosign.pub
+cosign sign --key cosign.key ghcr.io/v-dev-cl/worker:main
+cosign verify --key cosign.pub ghcr.io/v-dev-cl/worker:main
+```
+
+En producción se prefiere el modo **keyless**: en vez de una llave que tienes que
+custodiar, cosign usa tu identidad **OIDC** (la del runner de GitHub Actions, por
+ejemplo) contra Fulcio y Rekor de Sigstore, sin llave de larga vida. El lab corre
+con par de llaves para que veas las piezas; el principio es idéntico.
+
+Lo crítico, y es un malentendido común: **firmar prueba procedencia e integridad,
+no que la imagen esté libre de vulnerabilidades**. Una imagen firmada puede estar
+plagada de CVEs; la firma solo certifica *quién* la construyó y que *no fue
+alterada*. Por eso firma y escaneo se complementan: el escaneo es el gate de
+calidad, la firma es la cadena de custodia.
+
+## El lab, local primero
+
+Antes de tocar CI, corre los tres pasos a mano contra la imagen del sample app:
+
+1. Gatea el escaneo: `trivy image --exit-code 1 --severity HIGH,CRITICAL ghcr.io/v-dev-cl/worker:main` y mira el exit code.
+2. Genera el SBOM: `trivy image --format cyclonedx --output sbom.json ghcr.io/v-dev-cl/worker:main`.
+3. Firma local: `cosign generate-key-pair`, luego `cosign sign --key cosign.key …` y verifica con `cosign verify --key cosign.pub …`.
+
+<LabCheck client:load stepId="09-seguridad/lab-4/step-1" locale="es" />
+
+## El job de CI
+
+En el pipeline se encadenan los tres: el escaneo gatea, el SBOM se sube como
+artefacto, y cosign firma la imagen ya publicada (keyless vía OIDC, por eso el
+`permissions: id-token: write`).
+
+```yaml
+  supply-chain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      # Gate: falla el build si hay HIGH o CRITICAL
+      - name: Scan image (gate)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ghcr.io/v-dev-cl/worker:main
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+      # SBOM como artefacto que guardas para el día del próximo CVE
+      - name: Generate SBOM
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ghcr.io/v-dev-cl/worker:main
+          format: cyclonedx
+          output: sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+      # Firma keyless con la identidad OIDC del runner
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign image
+        run: cosign sign --yes ghcr.io/v-dev-cl/worker:main
+```
+
+Con esto la imagen que llega a producción está **gateada** (sin CVEs graves
+conocidos), **inventariada** (SBOM guardado) y **firmada** (procedencia
+verificable). En la próxima lección codificamos las reglas mismas: policy-as-code
+con Checkov y Kyverno.
