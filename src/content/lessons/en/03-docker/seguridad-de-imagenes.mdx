@@ -74,6 +74,8 @@ Before you push, scan the image for known CVEs. Two standard tools: **trivy**
 (open source, also analyzes dependencies) and **docker scout** (built into
 Docker). They list vulnerabilities by severity so you can decide whether to block
 the deploy. In module 4 this scan becomes an automatic step of the pipeline.
+Module 9 picks it up in depth: Trivy as a severity gate, SBOM, and image signing
+with cosign.
 
 <TerminalExercise
   client:visible

@@ -76,7 +76,8 @@ Antes de hacer `push`, escanea la imagen en busca de CVEs conocidos. Dos
 herramientas estándar: **trivy** (open source, también analiza dependencias) y
 **docker scout** (integrado en Docker). Te listan las vulnerabilidades por
 severidad para que decidas si bloqueas el deploy. En el módulo 4 este escaneo se
-vuelve un paso automático del pipeline.
+vuelve un paso automático del pipeline. El módulo 9 lo retoma a fondo: Trivy como
+gate por severidad, SBOM y firma de imágenes con cosign.
 
 <TerminalExercise
   client:visible

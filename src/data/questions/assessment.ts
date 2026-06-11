@@ -305,4 +305,42 @@ export const assessmentQuestions: QuizQuestion[] = [
       en: 'On-premise means CapEx and the burden of operating the hardware; cloud trades that for OpEx and managed services.',
     },
   },
+  {
+    id: 'a-09-1',
+    topic: '09-seguridad',
+    text: {
+      es: 'Hardcodeaste una llave de AWS y la commiteaste hace 30 commits. ¿Qué tipo de scanner la encuentra?',
+      en: 'You hardcoded an AWS key and committed it 30 commits ago. Which kind of scanner finds it?',
+    },
+    options: [
+      { id: 'a', text: { es: 'SAST (análisis estático del código)', en: 'SAST (static code analysis)' } },
+      { id: 'b', text: { es: 'Un escáner de secretos sobre el historial de git (gitleaks)', en: 'A secret scanner over git history (gitleaks)' } },
+      { id: 'c', text: { es: 'SCA (análisis de dependencias)', en: 'SCA (dependency analysis)' } },
+      { id: 'd', text: { es: 'Un escáner de imágenes de contenedor', en: 'A container image scanner' } },
+    ],
+    correct: ['b'],
+    explanation: {
+      es: 'Los secretos quedan en el historial de git para siempre; un escáner de secretos como gitleaks revisa todos los commits, no solo el árbol actual.',
+      en: 'Secrets live in git history forever; a secret scanner like gitleaks inspects every commit, not just the current tree.',
+    },
+  },
+  {
+    id: 'a-09-2',
+    topic: '09-seguridad',
+    text: {
+      es: '¿Qué significa "shift-left" en seguridad?',
+      en: 'What does "shift-left" mean in security?',
+    },
+    options: [
+      { id: 'a', text: { es: 'Mover los chequeos de seguridad temprano, al pipeline, en vez de una auditoría al final', en: 'Move security checks early, into the pipeline, instead of a late audit' } },
+      { id: 'b', text: { es: 'Migrar la infraestructura a la izquierda del diagrama de red', en: 'Migrate infrastructure to the left of the network diagram' } },
+      { id: 'c', text: { es: 'Correr todo en un solo cluster', en: 'Run everything in a single cluster' } },
+      { id: 'd', text: { es: 'Delegar la seguridad al equipo de operaciones', en: 'Delegate security to the operations team' } },
+    ],
+    correct: ['a'],
+    explanation: {
+      es: 'Shift-left es correr SAST, SCA, escaneo de secretos e imágenes en CI: encontrar problemas cuando arreglarlos es barato, no en una auditoría tardía.',
+      en: 'Shift-left is running SAST, SCA, secret and image scanning in CI: catching issues when they are cheap to fix, not in a late audit.',
+    },
+  },
 ];

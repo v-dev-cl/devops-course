@@ -1,0 +1,130 @@
+---
+title: SAST your code with Semgrep
+description: Static analysis to find security bugs in your own code before you merge.
+objectives:
+  - Explain what static analysis finds (and what it does not)
+  - Run Semgrep with registry rulesets and triage false positives
+  - Add Semgrep as a job in the GitHub Actions pipeline
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+import LabCheck from '@/components/LabCheck';
+
+In the scanner map from the previous lesson, **SAST** looked at **your own code**.
+This lesson grounds it in a concrete tool: Semgrep. The idea of static analysis is
+to read the code *without running it* and hunt for dangerous patterns: a SQL query
+built by concatenating strings, an `eval` fed with user input, a handler in your
+`worker` that takes a body and never validates it. It catches the bug while the dev
+still has the change fresh, not in a prod incident.
+
+## What it finds (and what it does not)
+
+Before trusting a tool you need to know its blind spots. SAST is **not** a
+universal scanner:
+
+- **It does not find secrets.** An AWS key committed to history is surfaced by a
+  secret scanner (gitleaks), not Semgrep.
+- **It does not find dependency CVEs.** A vulnerability in an npm library you
+  import is the job of SCA (we cover it in the next lesson).
+- **It does not find runtime bugs.** A race condition or an error that only shows
+  up under real load won't come out of reading static code.
+
+What SAST **does** find is the dangerous logic **you wrote**: the pattern is right
+there, in the text of the file, and a rule recognizes it. Each scanner covers a
+different surface; SAST is only one of them.
+
+## Semgrep's model: rules and rulesets
+
+Semgrep works with **rules**. A rule describes a code pattern to match —for
+example, "calling `exec()` with a string that comes from a request"— in a way that
+understands the language syntax, not a plain-text `grep`. Writing rules by hand is
+possible, but rarely necessary: the **registry** ships curated **rulesets** that
+you apply with `--config`:
+
+- `p/ci` — a balanced set, meant to run in CI without drowning you in noise.
+- `p/typescript` — rules specific to TypeScript/JavaScript (your NestJS stack).
+- `p/owasp-top-ten` — rules mapped to the OWASP Top Ten categories.
+
+A ruleset is just a collection of rules: `semgrep --config p/typescript .` runs
+every rule in that bundle against the current directory.
+
+## Triage: true vs false positives
+
+No SAST is perfect: it will flag lines that are actually safe (**false
+positives**). Triage is the key skill. When a finding is real, you fix it. When
+it's a false positive, you **suppress it surgically** —not by turning off the whole
+gate:
+
+- A `// nosemgrep: <rule>` comment on the line silences that single finding.
+- A `.semgrepignore` file (like a `.gitignore`) excludes paths you don't care
+  about: tests, generated code, vendored sources.
+- **Baseline scanning** tells Semgrep to report only findings that are *new*
+  relative to a base commit. That way the hundreds of legacy findings in an old
+  repo don't drown you: the gate fails on what *this PR* introduces, not on
+  historical debt. It's the same anti alert-fatigue rule from module 7: a gate
+  people respect is worth more than one that always fires.
+
+Turning the gate off because "it throws false positives" is the mistake: it
+blinds you to the true positives too.
+
+## The lab: run Semgrep locally first
+
+Like any scanner, you try it **locally** before wiring it into the pipeline, so
+you don't discover its behavior in a broken PR. Install it (`pip install semgrep`
+or via Docker) and run it against the sample app. The command CI uses internally
+is `semgrep ci`; to point at a specific ruleset you use `semgrep --config <ruleset> .`.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Run Semgrep over the repo with the CI ruleset."
+  accept={[ 'semgrep ci', /^semgrep (scan )?--config[= ]\S+( \.)?$/ ]}
+  hints={["The tool is 'semgrep'.", "For CI: 'semgrep ci'. For a ruleset: 'semgrep --config p/typescript .'"]}
+  solution="semgrep ci"
+/>
+
+Read the output: each finding carries the file, the line, the rule that matched,
+and an explanation. Walk through the ones in the sample app and decide which are
+real and which are false positives: that's triage in practice.
+
+<LabCheck client:load stepId="09-seguridad/lab-1/step-1" locale="en" />
+
+## The CI job
+
+Once the local run looks healthy, you add it as a job in the module-4 GitHub
+Actions workflow. The stable form today is to run the official Semgrep image as
+the job `container` and execute `semgrep ci` (the old
+`returntocorp/semgrep-action@v1` was deprecated when the project moved orgs; use
+the container and you don't depend on a deprecated action):
+
+```yaml
+  semgrep:
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep SAST
+        run: semgrep ci --config p/ci
+```
+
+`semgrep ci` is built for pipelines: with a base repo it does diff-aware scanning
+(only what's new in the PR) and returns a non-zero exit code when there are
+blocking findings, which **fails the build**. Start with `p/ci`, and when you want
+to raise the bar add `p/typescript` and `p/owasp-top-ten`.
+
+<aside>
+
+**Apply it for real.** Drop that job into the `build-and-publish.yml` of a real,
+low-traffic service, next to the build and tests from module 4. Run it in
+observe mode first —let it report without failing anything— to measure how much
+noise it throws against your existing codebase; that's where you set the baseline.
+Once the `main` run is clean, raise the gate to blocking on PRs. Repeat per
+service: the first scan of an old repo always finds debt, and the baseline is what
+keeps that historical debt from failing every new PR.
+
+</aside>
+
+In the next lesson we move from code to **dependencies**: most of your attack
+surface lives in packages you didn't write.

@@ -1,0 +1,142 @@
+---
+title: Dependencias y SCA
+description: Tu árbol de dependencias es la mayor parte de tu superficie de ataque; cómo escanearlo.
+objectives:
+  - Distinguir SCA de SAST y entender las CVEs transitivas
+  - Escanear el árbol de dependencias con trivy fs y revisar severidades
+  - Usar Dependabot y el lockfile para mantener el escaneo reproducible
+minutes: 16
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+import LabCheck from '@/components/LabCheck';
+
+La lección anterior te dejó con una idea: la mayor parte de tu superficie de
+ataque vive en código que **no escribiste**. Tu `worker` de NestJS importa un
+puñado de paquetes directos, pero cada uno arrastra los suyos, y esos a los
+suyos. En un `node_modules` típico terminas con cientos —a veces miles— de
+paquetes, y cualquiera de ellos puede tener una CVE. **SCA** (Software
+Composition Analysis) es el scanner que revisa ese árbol.
+
+## SCA no es SAST
+
+Son scanners distintos que miran cosas distintas:
+
+- **SAST** lee **tu propio código** y busca patrones peligrosos que tú
+  escribiste (la lección de Semgrep).
+- **SCA** lee **tus dependencias** y las compara contra bases de datos de CVEs
+  conocidas. No le importa cómo escribiste tu código; le importa qué versión de
+  qué paquete tienes instalado.
+
+Un SAST en verde no dice nada sobre tus dependencias, y al revés. Necesitas los
+dos: cubren superficies que no se solapan.
+
+## El riesgo transitivo
+
+Acá está el punto incómodo. Cuando agregas un paquete a tu `package.json`,
+**elegiste ese**. Pero la CVE que te va a tocar casi nunca está en lo que
+elegiste: está tres niveles más abajo, en una dependencia **transitiva** que
+nunca nombraste. Importaste un framework web, ese trae un parser, ese parser
+trae una librería de utilidades, y ahí —en la utilidad que ni sabías que
+existía— aparece el agujero. Log4Shell fue exactamente esto a escala masiva:
+miles de aplicaciones vulnerables por una librería de logging que casi nadie
+había puesto a mano.
+
+La conclusión práctica: no alcanza con auditar tus dependencias directas. SCA
+escanea el **árbol completo**, directas y transitivas, porque ahí es donde vive
+el riesgo real.
+
+## Escanear con Trivy (y Grype)
+
+**Trivy** (de Aqua Security) escanea un sistema de archivos completo, y al
+hacerlo lee los **lockfiles** (`pnpm-lock.yaml`, `package-lock.json`,
+`go.sum`, etc.) para saber exactamente qué versiones están resueltas. El
+comando base es:
+
+```bash
+trivy fs .
+```
+
+`fs` es por *filesystem*: apunta al directorio actual, encuentra los lockfiles,
+resuelve el árbol completo y reporta cada paquete con una CVE conocida, con su
+severidad. **Grype** (de Anchore) es un scanner SCA alternativo que hace lo
+mismo sobre el lockfile; si quieres un segundo par de ojos, corres los dos y
+comparas. La lógica es idéntica: lockfile → árbol resuelto → match contra CVEs.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Escanea las dependencias del repo (sistema de archivos) con Trivy."
+  accept={[ 'trivy fs .', /^trivy fs \.?( --severity \S+)?$/ ]}
+  hints={["Es 'trivy' con el subcomando 'fs' (filesystem).", "El objetivo es el directorio actual: '.'"]}
+  solution="trivy fs ."
+/>
+
+Corre el escaneo contra el sample app y mira la salida: cada hallazgo trae el
+paquete, la versión instalada, el ID de la CVE, la severidad y —clave— si hay
+una versión arreglada disponible.
+
+<LabCheck client:load stepId="09-seguridad/lab-2/step-1" locale="es" />
+
+## Triage: severidad y "fixable vs not"
+
+El primer escaneo de un repo viejo siempre tira una lista larga. No la arreglas
+toda de golpe; la **triageas**:
+
+- **Severidad.** Trivy clasifica cada hallazgo (`LOW`, `MEDIUM`, `HIGH`,
+  `CRITICAL`). Arrancas por `CRITICAL` y `HIGH`: ahí está el riesgo que importa.
+- **Fixable vs not.** Si existe una versión parchada, el fix es un bump de
+  versión —barato, hazlo ya. Si **no** hay parche todavía (la columna de
+  "fixed version" viene vacía), no puedes bumpear: anotas el riesgo, evalúas si
+  el código realmente alcanza esa ruta vulnerable, y monitoreas hasta que salga
+  el parche.
+
+Triagear por severidad y por arreglabilidad es lo que evita que un escaneo
+honesto se vuelva un muro de ruido que nadie lee.
+
+## Mantenerlo reproducible: lockfile y Dependabot
+
+Un escaneo solo sirve si es **reproducible**: el resultado de hoy en tu máquina
+tiene que ser el mismo que el de CI mañana. Eso lo da el **lockfile**. Tu
+`package.json` puede decir `^4.18.0` —un rango—, pero `pnpm-lock.yaml`
+**pinea** la versión exacta que se instaló, incluida cada transitiva. Trivy lee
+ese pin, así que el escaneo es determinista: misma entrada, mismo resultado. Sin
+lockfile, dos instalaciones podrían resolver versiones distintas y el escaneo se
+vuelve una lotería.
+
+Pero pinear congela el árbol: si nunca actualizas, las CVEs nuevas se acumulan
+en silencio. Ahí entra **Dependabot**. Vigila tus lockfiles, y cuando aparece
+una CVE nueva o un release que la arregla, **abre un PR** con el bump (y manda
+una alerta de seguridad en el repo). Tú revisas el PR, dejas que CI corra los
+tests y mergeas. El lockfile te da escaneos reproducibles; Dependabot te
+mantiene al día sin que tengas que auditar a mano.
+
+## El job de CI
+
+El run local se vuelve un gate del pipeline del módulo 4. La forma estable hoy
+es la action oficial de Trivy:
+
+```yaml
+  sca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy SCA (gate)
+        uses: aquasecurity/trivy-action@v0.24.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          # Frena el build solo ante HIGH/CRITICAL: ese es el gate
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+```
+
+La opción que convierte el escaneo en **gate** es `--exit-code 1 --severity
+HIGH,CRITICAL` (acá expresada como `exit-code` + `severity` en la action): el
+job falla —y frena el merge— solo cuando hay una CVE `HIGH` o `CRITICAL`. Los
+`LOW`/`MEDIUM` siguen apareciendo en el reporte para que los veas, pero no
+frenan el build. Es la misma disciplina anti alert-fatigue: el gate dispara por
+lo que de verdad importa, no por cada hallazgo menor.
+
+En la próxima lección bajamos al historial de git: los **secretos** que se
+filtran en un commit y por qué borrarlos no alcanza.
