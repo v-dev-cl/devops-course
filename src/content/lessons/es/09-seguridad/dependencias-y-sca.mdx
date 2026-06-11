@@ -122,7 +122,7 @@ es la action oficial de Trivy:
     steps:
       - uses: actions/checkout@v4
       - name: Trivy SCA (gate)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
           scan-type: fs
           scan-ref: .
