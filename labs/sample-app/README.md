@@ -19,6 +19,7 @@ La app expone dos endpoints:
 | **Tags de rama mutables** (`development`, `master`) | `k8s/overlays/*/kustomization.yaml` → campo `newTag` | Lab 1 — módulo 04 (*Tags inmutables y rollback*) |
 | **Secretos comiteados en git** (`API_KEY=super-secret-*-key`) | `k8s/overlays/*/kustomization.yaml` → `secretGenerator.literals` | Lab 3 — módulo 05 (*Secretos con ESO*) |
 | **Deploy manual con skaffold / sin CD** | `skaffold.yaml` + ausencia de paso de commit-back en el workflow | Lab 2 — módulo 05 (*Argo CD y GitOps*) |
+| **Sin escaneo de seguridad en CI** | el workflow no corre SAST/SCA/secretos/imagen | Módulo 09 (*Seguridad en el pipeline*) |
 
 El workflow en `.github/workflows/build-and-publish.yml` es el estado **antes** del Lab 1: publica la imagen con el tag de rama (`type=ref,event=branch`), sin SHA inmutable ni commit-back. El workflow está **inerte** dentro de este repo del curso porque GitHub solo ejecuta los workflows del `.github/` raíz; se activa cuando lo copias a un scratch repo (ver abajo).
 
@@ -89,6 +90,7 @@ The app exposes two endpoints:
 | **Mutable branch tags** (`development`, `master`) | `k8s/overlays/*/kustomization.yaml` → `newTag` field | Lab 1 — module 04 (*Immutable tags and rollback*) |
 | **Secrets committed to git** (`API_KEY=super-secret-*-key`) | `k8s/overlays/*/kustomization.yaml` → `secretGenerator.literals` | Lab 3 — module 05 (*Secrets with ESO*) |
 | **Manual skaffold deploy / no CD** | `skaffold.yaml` + no commit-back step in the workflow | Lab 2 — module 05 (*Argo CD and GitOps*) |
+| **No security scanning in CI** | the workflow runs no SAST/SCA/secret/image scan | Module 09 (*Pipeline security*) |
 
 The workflow at `.github/workflows/build-and-publish.yml` is the **before** state for Lab 1: it publishes the image with a branch tag (`type=ref,event=branch`), no immutable SHA, no commit-back. The workflow is **inert** inside this course repo because GitHub only runs workflows from the root `.github/`; it activates when you copy it to a scratch repo (see below).
 
