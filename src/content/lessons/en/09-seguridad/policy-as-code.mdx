@@ -1,0 +1,149 @@
+---
+title: Policy-as-code
+description: Codifying guardrails with Checkov over Terraform and Kyverno over Kubernetes.
+objectives:
+  - Scan IaC with Checkov and justify finding skips
+  - Write a Kyverno admission policy and distinguish audit vs enforce mode
+  - Place policy-as-code inside the Argo CD GitOps flow
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+import LabCheck from '@/components/LabCheck';
+
+The scanners in the previous lessons look for vulnerabilities. Policy-as-code
+looks for something else: **misconfigurations**. It's not a CVE in a library,
+it's an S3 bucket you left public, a security group open to the internet, a Pod
+running as root. The idea is to codify those guardrails as automatic rules so the
+misconfiguration **fails before shipping**, instead of discovering it in an
+audit —or a breach— months later.
+
+## Checkov over Terraform
+
+**Checkov** scans infrastructure as code: your Terraform from module 6, but also
+CloudFormation, Kubernetes manifests, and more. You run `checkov -d .` over a
+directory and it checks each resource against hundreds of rules with IDs like
+`CKV_AWS_20`.
+
+A finding looks like this: you define an S3 bucket without blocking public
+access, or a security group with `cidr_blocks = ["0.0.0.0/0"]` on port 22, and
+Checkov marks it as `FAILED` with the rule ID, the file and line, and a link to
+the remediation guide.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Scan the IaC manifests in the current directory with Checkov."
+  accept={[ 'checkov -d .', /^checkov -d \.?( --quiet)?$/ ]}
+  hints={["The tool is 'checkov'.", "Scan a directory with '-d .'"]}
+  solution="checkov -d ."
+/>
+
+Sometimes a finding doesn't apply: you know that bucket is public on purpose (a
+static site). You don't disable the rule for the whole repo —that blinds you to
+the next accidental public bucket—. You suppress **that** finding with an inline
+justification, a comment inside the resource:
+
+```hcl
+resource "aws_s3_bucket" "public_site" {
+  #checkov:skip=CKV_AWS_20: public on purpose, serves a static site
+  bucket = "shop-product-images"
+}
+```
+
+The skip is versioned right next to the resource, with the *why* visible in the
+diff. If someone deletes or abuses it, it shows up in review. `checkov -d .
+--quiet` reduces the output to only the `FAILED` findings, which is what you want
+in CI.
+
+## Kyverno over Kubernetes
+
+Checkov catches the misconfiguration **before** apply. But what about things
+created **inside** the cluster, without going through your Terraform? That's
+where **Kyverno** comes in, a Kubernetes *admission controller*: it hooks via
+webhooks into the moment the API receives a resource, and validates every Pod,
+Deployment, or whatever **at admission**, before it exists.
+
+You write the rules as a `ClusterPolicy` resource. Three canonical guardrails:
+disallow images with the `:latest` tag (you don't know what you deployed),
+require containers to run as non-root, and require them to declare `resources`
+(requests/limits). A policy for the first case:
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-image-tag
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "The ':latest' tag is not allowed; pin an immutable version."
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"
+```
+
+The key piece is `validationFailureAction`. In **`Audit`** Kyverno **reports** the
+violation in a policy report but **does not block**: the resource is created
+anyway. In **`Enforce`** Kyverno **rejects** the resource at admission: it never
+gets to exist. You always roll out a policy in `Audit` first —you measure how
+much of the cluster violates it today without breaking deploys—, fix the
+offenders, and only then switch to `Enforce`.
+
+## The relationship to Argo CD
+
+The `ClusterPolicy` is just another Kubernetes manifest. That means it lives in
+git and Argo CD deploys it like any Deployment from module 5: the policy is one
+more resource that Argo CD **reconciles**. If someone deletes it from the cluster
+by hand, Argo CD puts it back; the `Audit`-to-`Enforce` change is a reviewable
+commit. GitOps doesn't just deploy your app: it deploys and maintains the rules
+that protect it.
+
+## The lab, local first
+
+First run Checkov against the sample app manifests:
+
+1. `checkov -d .` at the repo root and read the `FAILED` findings with their IDs.
+
+<LabCheck client:load stepId="09-seguridad/lab-5/step-1" locale="en" />
+
+Then apply the Kyverno policy in audit mode to the kind cluster from module 5
+(with Kyverno already installed) and look at the policy report:
+
+2. `kubectl apply -f disallow-latest-tag.yaml`, then deploy a Pod with `:latest`
+   and confirm it **is created** but shows up as a violation in the report.
+
+<LabCheck client:load stepId="09-seguridad/lab-5/step-2" locale="en" />
+
+## The CI job
+
+Checkov enters the pipeline as one more job; you gate it like the previous
+scanners. Here in its simplest form, installing the package:
+
+```yaml
+  checkov:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Checkov
+        run: pip install checkov
+      # Fail the build if there are misconfigurations in the IaC
+      - name: Scan IaC
+        run: checkov -d . --quiet
+```
+
+With this you close the module's loop: code, dependencies, secrets, images, and
+now **configurations** all have their gate. Security stopped being a late audit
+and became part of the pipeline.

@@ -41,6 +41,7 @@ import { questions as m09sast } from './lessons/09-seguridad/sast-con-semgrep';
 import { questions as m09sca } from './lessons/09-seguridad/dependencias-y-sca';
 import { questions as m09sec } from './lessons/09-seguridad/escaneo-de-secretos';
 import { questions as m09sup } from './lessons/09-seguridad/supply-chain-e-imagenes';
+import { questions as m09pac } from './lessons/09-seguridad/policy-as-code';
 
 /** lessonId -> lesson quiz. Content tasks register each ready lesson here. */
 export const lessonQuizzes: Record<string, QuizQuestion[]> = {
@@ -86,4 +87,5 @@ export const lessonQuizzes: Record<string, QuizQuestion[]> = {
   '09-seguridad/dependencias-y-sca': m09sca,
   '09-seguridad/escaneo-de-secretos': m09sec,
   '09-seguridad/supply-chain-e-imagenes': m09sup,
+  '09-seguridad/policy-as-code': m09pac,
 };

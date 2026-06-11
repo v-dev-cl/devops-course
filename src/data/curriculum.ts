@@ -156,6 +156,7 @@ export const curriculum: ModuleDef[] = [
       { slug: 'dependencias-y-sca', status: 'ready' },
       { slug: 'escaneo-de-secretos', status: 'ready' },
       { slug: 'supply-chain-e-imagenes', status: 'ready' },
+      { slug: 'policy-as-code', status: 'ready' },
     ],
   },
 ];
