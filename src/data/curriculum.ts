@@ -152,6 +152,7 @@ export const curriculum: ModuleDef[] = [
     },
     lessons: [
       { slug: 'shift-left-seguridad', status: 'ready' },
+      { slug: 'sast-con-semgrep', status: 'ready' },
     ],
   },
 ];

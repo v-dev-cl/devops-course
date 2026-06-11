@@ -1,0 +1,130 @@
+---
+title: SAST de tu código con Semgrep
+description: Análisis estático para encontrar bugs de seguridad en tu propio código antes de mergear.
+objectives:
+  - Explicar qué encuentra (y qué no) el análisis estático
+  - Correr Semgrep con rulesets del registry y triagear falsos positivos
+  - Agregar Semgrep como job del pipeline de GitHub Actions
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+import LabCheck from '@/components/LabCheck';
+
+En el mapa de scanners de la lección anterior, **SAST** miraba **tu propio
+código**. Esta lección lo aterriza con una herramienta concreta: Semgrep. La idea
+del análisis estático es leer el código *sin ejecutarlo* y buscar patrones
+peligrosos: una query SQL armada concatenando strings, un `eval` con entrada del
+usuario, un handler de tu `worker` que recibe un body y nunca lo valida. Encuentra
+el bug mientras el dev todavía tiene el cambio fresco, no en un incidente de prod.
+
+## Qué encuentra (y qué no)
+
+Antes de confiar en una herramienta hay que saber dónde tiene puntos ciegos.
+SAST **no** es un escáner universal:
+
+- **No encuentra secretos.** Una llave de AWS commiteada en el historial la saca
+  un escáner de secretos (gitleaks), no Semgrep.
+- **No encuentra CVEs de dependencias.** Una vulnerabilidad en una librería de
+  npm que importas es trabajo del SCA (lo vemos en la próxima lección).
+- **No encuentra bugs de runtime.** Una condición de carrera o un error que solo
+  aparece bajo carga real no sale de leer el código estático.
+
+Lo que SAST **sí** encuentra es la lógica peligrosa **que tú escribiste**: el
+patrón está ahí, en el texto del archivo, y una regla lo reconoce. Cada scanner
+cubre una superficie distinta; SAST es solo una de ellas.
+
+## El modelo de Semgrep: reglas y rulesets
+
+Semgrep funciona con **reglas**. Una regla describe un patrón de código a buscar
+—por ejemplo, "llamar a `exec()` con un string que viene de un request"— de forma
+que entiende la sintaxis del lenguaje, no es un `grep` de texto plano. Escribir
+reglas a mano es posible, pero rara vez hace falta: el **registry** trae
+**rulesets** curados que aplicas con `--config`:
+
+- `p/ci` — un set balanceado, pensado para correr en CI sin ahogarte en ruido.
+- `p/typescript` — reglas específicas para TypeScript/JavaScript (tu stack NestJS).
+- `p/owasp-top-ten` — reglas mapeadas a las categorías del OWASP Top Ten.
+
+Un ruleset es solo una colección de reglas: `semgrep --config p/typescript .`
+corre todas las reglas de ese paquete contra el directorio actual.
+
+## Triagear: verdaderos vs falsos positivos
+
+Ningún SAST es perfecto: marcará líneas que en realidad son seguras (**falsos
+positivos**). El triage es la habilidad clave. Cuando un hallazgo es real, lo
+arreglas. Cuando es un falso positivo, lo **suprimes con precisión** —no apagando
+el gate entero:
+
+- Un comentario `// nosemgrep: <regla>` en la línea silencia ese hallazgo puntual.
+- Un archivo `.semgrepignore` (como un `.gitignore`) excluye rutas que no te
+  interesan: tests, código generado, vendored.
+- **Baseline scanning** le dice a Semgrep que solo te reporte hallazgos *nuevos*
+  respecto a un commit base. Así, los cientos de hallazgos legacy de un repo viejo
+  no te ahogan: el gate frena por lo que *este PR* introduce, no por deuda
+  histórica. Es la misma regla anti alert-fatigue del módulo 7: un gate que la
+  gente respeta vale más que uno que dispara siempre.
+
+Apagar el gate porque "tira falsos positivos" es el error: te deja ciego también
+ante los verdaderos positivos.
+
+## El lab: corre Semgrep local primero
+
+Como todo scanner, lo pruebas **localmente** antes de meterlo al pipeline, así no
+descubres su comportamiento en un PR roto. Instálalo (`pip install semgrep` o vía
+Docker) y córrelo contra el sample app. El comando que usa CI internamente es
+`semgrep ci`; para apuntar a un ruleset puntual usas `semgrep --config <ruleset> .`.
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Corre Semgrep sobre el repo con el ruleset de CI."
+  accept={[ 'semgrep ci', /^semgrep (scan )?--config[= ]\S+( \.)?$/ ]}
+  hints={["La herramienta es 'semgrep'.", "Para CI: 'semgrep ci'. Para un ruleset: 'semgrep --config p/typescript .'"]}
+  solution="semgrep ci"
+/>
+
+Mira la salida: cada hallazgo trae el archivo, la línea, la regla que matcheó y
+una explicación. Recorre los del sample app y decide cuáles son reales y cuáles
+falsos positivos: ese es el triage en la práctica.
+
+<LabCheck client:load stepId="09-seguridad/lab-1/step-1" locale="es" />
+
+## El job de CI
+
+Una vez que el run local se ve sano, lo agregas como un job del workflow de
+GitHub Actions del módulo 4. La forma estable hoy es correr la imagen oficial de
+Semgrep como `container` del job y ejecutar `semgrep ci` (la antigua
+`returntocorp/semgrep-action@v1` quedó obsoleta cuando el proyecto se movió de
+org; usa el contenedor y no dependes de una action deprecada):
+
+```yaml
+  semgrep:
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep SAST
+        run: semgrep ci --config p/ci
+```
+
+`semgrep ci` está pensado para pipelines: con un repo base hace diff-aware
+scanning (solo lo nuevo del PR) y devuelve un exit code distinto de cero si hay
+hallazgos bloqueantes, lo que **frena el build**. Empieza con `p/ci`, y cuando
+quieras subir el listón agrega `p/typescript` y `p/owasp-top-ten`.
+
+<aside>
+
+**Aplícalo de verdad.** Pega ese job en el `build-and-publish.yml` de un servicio
+real de bajo tráfico, junto al build y los tests del módulo 4. Córrelo primero en
+modo observación —deja que reporte sin frenar nada— para medir cuánto ruido tira
+sobre tu base de código existente; ahí decides el baseline. Cuando el run en `main`
+quede limpio, sube el gate a bloqueante en los PRs. Repite por servicio: el primer
+scan de un repo viejo siempre encuentra deuda, y el baseline es lo que evita que
+esa deuda histórica frene cada PR nuevo.
+
+</aside>
+
+En la próxima lección pasamos del código a las **dependencias**: la mayor parte
+de tu superficie de ataque vive en paquetes que no escribiste.
