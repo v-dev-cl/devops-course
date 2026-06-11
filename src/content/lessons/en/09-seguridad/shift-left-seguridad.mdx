@@ -1,0 +1,80 @@
+---
+title: Shift-left, or why security belongs in the pipeline
+description: The map of security scanners and how to decide when to fail the build.
+objectives:
+  - Explain what shift-left is and why it is cheaper than a late audit
+  - Map each kind of scanner (SAST, SCA, secrets, IaC, images, supply chain) to the problem it detects
+  - Decide when a finding fails the build and when it only warns
+minutes: 12
+---
+
+There's a classic ops anti-pattern: **throwing code over the wall**. Devs write
+it, lob it to the other side, and let someone else deal with it. Security works
+the same way when you leave it for the end: a **late audit**, a PDF full of
+findings right before you ship, against code you wrote weeks ago. By then fixing
+hurts: the context has gone cold, the debt has piled up, and a leaked secret has
+been sitting in 200 commits of history.
+
+**Shift-left** means moving those checks toward the left of the timeline:
+instead of auditing at the end, you run security scanners as one more step of
+your GitHub Actions pipeline (the one from module 4), on every PR. The idea is
+simple: catch the problem when fixing it is **cheap** —while the dev still has
+the change fresh in mind— and not once it's buried in prod among dozens of NestJS
+services.
+
+## The scanner map
+
+There is no single "security scanner." There are families, and each one looks at
+a different surface. Memorize the map and you'll know which tool surfaces which
+class of problem:
+
+- **SAST** (Static Application Security Testing) — looks at **your own code**.
+  It hunts for dangerous patterns: SQL built with string concatenation, unsafe
+  use of `eval`, missing validation. It's your logic, not a third party's.
+- **SCA** (Software Composition Analysis) — looks at **your dependencies**. It
+  cross-checks your package tree (direct and transitive) against CVE databases.
+  Most of your attack surface lives here, in code you didn't write.
+- **Secret scanning** — looks at **your git history**. It finds AWS keys, tokens,
+  and passwords that got committed. Crucially, it inspects every commit, not just
+  the current tree.
+- **IaC scanning** — looks at **your Terraform and k8s manifests**. It catches
+  misconfigurations: a public S3 bucket, a security group open to the world, a
+  pod running as root.
+- **Image scanning** — looks at **your containers**. It reports CVEs in the base
+  OS and in the libraries inside the image.
+- **Supply chain** — looks at **provenance**: where did this artifact come from
+  and who signed it? SBOMs and signatures answer "can I trust what I'm
+  deploying?".
+
+## Failing the build vs only warning
+
+Having the scan run is half of it. The other half is deciding what it does with a
+finding. Two modes:
+
+- **Fail the build** (gate): the finding breaks the pipeline and the PR can't
+  merge until it's resolved. That's right for the critical stuff: a plaintext
+  secret, a HIGH/CRITICAL CVE with a fix available.
+- **Warn-only**: the finding is recorded but the build continues. Good for
+  informational items or things you haven't triaged yet.
+
+Here's a trade-off you already saw in module 7 with alerting: **a gate that's too
+noisy gets ignored**. If every PR breaks over 80 low-severity dependency findings
+with no fix, the team learns to hit "merge anyway" without looking — alert
+fatigue applied to security. The practical rule: **fail the build only on
+actionable, high-severity findings**; everything else goes to warn-only or a
+triaged backlog. A gate people respect is worth more than one that always fires.
+
+## Where each thing goes in this module
+
+Each family has its hands-on lesson later:
+
+| Scanner | Looks at | Module 9 lesson |
+| --- | --- | --- |
+| SAST | Your code | SAST with Semgrep |
+| SCA | Your dependencies | Dependencies and SCA |
+| Secrets | Your git history | Secret scanning |
+| Images + supply chain | Your containers and their provenance | Supply chain and images |
+| IaC | Your Terraform and k8s | Policy-as-code |
+
+In the next lessons each scanner goes from concept to a real job in your
+pipeline, running against the sample app.

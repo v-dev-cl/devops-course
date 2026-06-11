@@ -1,0 +1,79 @@
+---
+title: Shift-left, o por qué la seguridad va en el pipeline
+description: El mapa de los scanners de seguridad y cómo decidir cuándo frenar el build.
+objectives:
+  - Explicar qué es shift-left y por qué es más barato que una auditoría tardía
+  - Mapear cada tipo de scanner (SAST, SCA, secretos, IaC, imágenes, supply chain) al problema que detecta
+  - Decidir cuándo un hallazgo frena el build y cuándo solo avisa
+minutes: 12
+---
+
+Hay un anti-patrón clásico en operaciones: **tirar el código por encima de la
+muralla**. Devs escriben, lo lanzan al otro lado y que se las arregle otro. Con
+seguridad pasa lo mismo cuando la dejas para el final: una **auditoría tardía**,
+un PDF lleno de hallazgos justo antes de shipear, sobre código que ya escribiste
+hace semanas. Para entonces arreglar duele: el contexto se enfrió, la deuda se
+acumuló y un secreto filtrado lleva 200 commits dando vueltas.
+
+**Shift-left** es mover esos chequeos hacia la izquierda de la línea de tiempo:
+en vez de auditar al final, corres scanners de seguridad como un paso más de tu
+pipeline de GitHub Actions (el del módulo 4), en cada PR. La idea es simple:
+encontrar el problema cuando arreglarlo es **barato** —mientras el dev todavía
+tiene el cambio fresco en la cabeza— y no cuando ya está enterrado en prod entre
+decenas de servicios NestJS.
+
+## El mapa de scanners
+
+No existe "un" scanner de seguridad. Hay familias, y cada una mira una superficie
+distinta. Memoriza el mapa y sabrás qué herramienta saca qué clase de problema:
+
+- **SAST** (Static Application Security Testing) — mira **tu propio código**.
+  Busca patrones peligrosos: SQL armado con concatenación, uso inseguro de
+  `eval`, validación que falta. Es tu lógica, no la de terceros.
+- **SCA** (Software Composition Analysis) — mira **tus dependencias**. Cruza tu
+  árbol de paquetes (directos y transitivos) contra bases de CVEs. La mayor parte
+  de tu superficie de ataque vive acá, en código que no escribiste.
+- **Escaneo de secretos** — mira **tu historial de git**. Encuentra llaves de
+  AWS, tokens y passwords commiteados. Importante: revisa todos los commits, no
+  solo el árbol actual.
+- **Escaneo de IaC** — mira **tu Terraform y tus manifiestos de k8s**. Detecta
+  malas configuraciones: un bucket S3 público, un security group abierto al
+  mundo, un pod corriendo como root.
+- **Escaneo de imágenes** — mira **tus contenedores**. Reporta CVEs en el sistema
+  operativo base y en las librerías dentro de la imagen.
+- **Supply chain** — mira la **procedencia**: ¿de dónde viene este artefacto y
+  quién lo firmó? SBOMs y firmas responden "¿puedo confiar en lo que estoy
+  desplegando?".
+
+## Frenar el build vs solo avisar
+
+Tener el scan corriendo es la mitad. La otra mitad es decidir qué hace con un
+hallazgo. Dos modos:
+
+- **Fail the build** (gate): el hallazgo rompe el pipeline y el PR no mergea
+  hasta resolverlo. Es lo correcto para lo crítico: un secreto en claro, una CVE
+  HIGH/CRITICAL con fix disponible.
+- **Warn-only**: el hallazgo queda anotado pero el build sigue. Sirve para lo
+  informativo o lo que aún no triageas.
+
+Acá hay un trade-off que ya viste en el módulo 7 con alerting: **un gate
+demasiado ruidoso se ignora**. Si cada PR rompe por 80 hallazgos low de
+dependencias sin fix, el equipo aprende a apretar "merge anyway" sin mirar —
+alert fatigue aplicado a seguridad. La regla práctica: **frena el build solo por
+lo accionable y de alta severidad**; el resto va a warn-only o a un backlog
+triageado. Un gate que la gente respeta vale más que uno que dispara siempre.
+
+## A dónde va cada cosa en este módulo
+
+Cada familia tiene su lección práctica más adelante:
+
+| Scanner | Mira | Lección del módulo 9 |
+| --- | --- | --- |
+| SAST | Tu código | SAST con Semgrep |
+| SCA | Tus dependencias | Dependencias y SCA |
+| Secretos | Tu historial de git | Escaneo de secretos |
+| Imágenes + supply chain | Tus contenedores y su procedencia | Supply chain e imágenes |
+| IaC | Tu Terraform y k8s | Policy-as-code |
+
+En las próximas lecciones cada scanner pasa de concepto a un job real en tu
+pipeline, corriendo contra el sample app.

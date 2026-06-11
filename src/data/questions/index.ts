@@ -36,6 +36,7 @@ import { questions as m08iam } from './lessons/08-cloud-aws/iam-vpc';
 import { questions as m08cmp } from './lessons/08-cloud-aws/computo-ecs-eks';
 import { questions as m08dat } from './lessons/08-cloud-aws/datos-s3-rds';
 import { questions as m08eso } from './lessons/08-cloud-aws/eso-secrets-manager';
+import { questions as m09sl } from './lessons/09-seguridad/shift-left-seguridad';
 
 /** lessonId -> lesson quiz. Content tasks register each ready lesson here. */
 export const lessonQuizzes: Record<string, QuizQuestion[]> = {
@@ -76,4 +77,5 @@ export const lessonQuizzes: Record<string, QuizQuestion[]> = {
   '08-cloud-aws/computo-ecs-eks': m08cmp,
   '08-cloud-aws/datos-s3-rds': m08dat,
   '08-cloud-aws/eso-secrets-manager': m08eso,
+  '09-seguridad/shift-left-seguridad': m09sl,
 };

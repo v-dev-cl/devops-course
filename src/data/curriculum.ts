@@ -8,7 +8,8 @@ export type ModuleId =
   | '05-kubernetes-gitops'
   | '06-terraform'
   | '07-observabilidad'
-  | '08-cloud-aws';
+  | '08-cloud-aws'
+  | '09-seguridad';
 
 export type LessonStatus = 'ready' | 'outline';
 
@@ -140,6 +141,17 @@ export const curriculum: ModuleDef[] = [
       { slug: 'computo-ecs-eks', status: 'ready' },
       { slug: 'datos-s3-rds', status: 'ready' },
       { slug: 'eso-secrets-manager', status: 'ready' },
+    ],
+  },
+  {
+    id: '09-seguridad',
+    title: { es: 'Seguridad en el pipeline (DevSecOps)', en: 'Pipeline Security (DevSecOps)' },
+    description: {
+      es: 'Shift-left: SAST, dependencias, secretos, supply chain y policy-as-code en tu pipeline.',
+      en: 'Shift-left: SAST, dependencies, secrets, supply chain, and policy-as-code in your pipeline.',
+    },
+    lessons: [
+      { slug: 'shift-left-seguridad', status: 'ready' },
     ],
   },
 ];
