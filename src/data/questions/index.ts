@@ -39,6 +39,7 @@ import { questions as m08eso } from './lessons/08-cloud-aws/eso-secrets-manager'
 import { questions as m09sl } from './lessons/09-seguridad/shift-left-seguridad';
 import { questions as m09sast } from './lessons/09-seguridad/sast-con-semgrep';
 import { questions as m09sca } from './lessons/09-seguridad/dependencias-y-sca';
+import { questions as m09sec } from './lessons/09-seguridad/escaneo-de-secretos';
 
 /** lessonId -> lesson quiz. Content tasks register each ready lesson here. */
 export const lessonQuizzes: Record<string, QuizQuestion[]> = {
@@ -82,4 +83,5 @@ export const lessonQuizzes: Record<string, QuizQuestion[]> = {
   '09-seguridad/shift-left-seguridad': m09sl,
   '09-seguridad/sast-con-semgrep': m09sast,
   '09-seguridad/dependencias-y-sca': m09sca,
+  '09-seguridad/escaneo-de-secretos': m09sec,
 };

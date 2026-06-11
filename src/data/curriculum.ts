@@ -154,6 +154,7 @@ export const curriculum: ModuleDef[] = [
       { slug: 'shift-left-seguridad', status: 'ready' },
       { slug: 'sast-con-semgrep', status: 'ready' },
       { slug: 'dependencias-y-sca', status: 'ready' },
+      { slug: 'escaneo-de-secretos', status: 'ready' },
     ],
   },
 ];
