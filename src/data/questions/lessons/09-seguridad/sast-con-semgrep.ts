@@ -31,7 +31,7 @@ export const questions: QuizQuestion[] = [
       { id: 'a', text: { es: 'Una imagen de contenedor lista para correr en CI', en: 'A container image ready to run in CI' } },
       { id: 'b', text: { es: 'Una colección curada de reglas (patrones de código) del registry que aplicas con `--config`', en: 'A curated collection of rules (code patterns) from the registry that you apply with `--config`' } },
       { id: 'c', text: { es: 'La base de datos de CVEs que Semgrep usa para escanear dependencias', en: 'The CVE database Semgrep uses to scan dependencies' } },
-      { id: 'd', text: { es: 'Un archivo que lista los hallazgos que querés ignorar', en: 'A file that lists the findings you want to ignore' } },
+      { id: 'd', text: { es: 'Un archivo que lista los hallazgos que quieres ignorar', en: 'A file that lists the findings you want to ignore' } },
     ],
     correct: ['b'],
     explanation: {
@@ -43,7 +43,7 @@ export const questions: QuizQuestion[] = [
     id: '09-sast-3',
     topic: '09-seguridad',
     text: {
-      es: 'Una regla marca una línea que vos sabés que es segura: es un falso positivo. ¿Cuál es la mejor forma de manejarlo?',
+      es: 'Una regla marca una línea que sabes que es segura: es un falso positivo. ¿Cuál es la mejor forma de manejarlo?',
       en: 'A rule flags a line you know is safe: it is a false positive. What is the best way to handle it?',
     },
     options: [
