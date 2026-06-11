@@ -1,0 +1,140 @@
+---
+title: Dependencies and SCA
+description: Your dependency tree is most of your attack surface; how to scan it.
+objectives:
+  - Distinguish SCA from SAST and understand transitive CVEs
+  - Scan the dependency tree with trivy fs and review severities
+  - Use Dependabot and the lockfile to keep scanning reproducible
+minutes: 16
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+import LabCheck from '@/components/LabCheck';
+
+The previous lesson left you with one idea: most of your attack surface lives in
+code you **didn't write**. Your NestJS `worker` imports a handful of direct
+packages, but each one drags in its own, and those drag in theirs. A typical
+`node_modules` ends up with hundreds —sometimes thousands— of packages, and any
+of them can carry a CVE. **SCA** (Software Composition Analysis) is the scanner
+that audits that tree.
+
+## SCA is not SAST
+
+They are different scanners looking at different things:
+
+- **SAST** reads **your own code** and hunts for dangerous patterns you wrote
+  (the Semgrep lesson).
+- **SCA** reads **your dependencies** and compares them against databases of
+  known CVEs. It doesn't care how you wrote your code; it cares which version of
+  which package you have installed.
+
+A green SAST scan says nothing about your dependencies, and vice versa. You need
+both: they cover surfaces that don't overlap.
+
+## The transitive risk
+
+Here is the uncomfortable part. When you add a package to your `package.json`,
+**you chose that one**. But the CVE that will hit you is almost never in what you
+chose: it's three levels down, in a **transitive** dependency you never named.
+You imported a web framework, it pulls in a parser, that parser pulls in a
+utility library, and there —in the utility you didn't even know existed— is the
+hole. Log4Shell was exactly this at massive scale: thousands of vulnerable
+applications because of a logging library almost nobody had added by hand.
+
+The practical takeaway: auditing your direct dependencies isn't enough. SCA
+scans the **whole tree**, direct and transitive, because that's where the real
+risk lives.
+
+## Scanning with Trivy (and Grype)
+
+**Trivy** (from Aqua Security) scans an entire filesystem, and while doing so it
+reads the **lockfiles** (`pnpm-lock.yaml`, `package-lock.json`, `go.sum`, etc.)
+to know exactly which versions are resolved. The base command is:
+
+```bash
+trivy fs .
+```
+
+`fs` is for *filesystem*: it points at the current directory, finds the
+lockfiles, resolves the full tree, and reports every package with a known CVE,
+with its severity. **Grype** (from Anchore) is an alternative SCA scanner that
+does the same over the lockfile; if you want a second pair of eyes, you run both
+and compare. The logic is identical: lockfile → resolved tree → match against
+CVEs.
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Scan the repo's dependencies (filesystem) with Trivy."
+  accept={[ 'trivy fs .', /^trivy fs \.?( --severity \S+)?$/ ]}
+  hints={["It's 'trivy' with the 'fs' (filesystem) subcommand.", "The target is the current directory: '.'"]}
+  solution="trivy fs ."
+/>
+
+Run the scan against the sample app and read the output: each finding carries
+the package, the installed version, the CVE ID, the severity and —crucially—
+whether a fixed version is available.
+
+<LabCheck client:load stepId="09-seguridad/lab-2/step-1" locale="en" />
+
+## Triage: severity and "fixable vs not"
+
+The first scan of an old repo always throws a long list. You don't fix it all at
+once; you **triage** it:
+
+- **Severity.** Trivy classifies each finding (`LOW`, `MEDIUM`, `HIGH`,
+  `CRITICAL`). You start with `CRITICAL` and `HIGH`: that's where the risk that
+  matters lives.
+- **Fixable vs not.** If a patched version exists, the fix is a version bump
+  —cheap, do it now. If there is **no** patch yet (the "fixed version" column is
+  empty), you can't bump: you note the risk, assess whether the code actually
+  reaches that vulnerable path, and monitor until the patch ships.
+
+Triaging by severity and by fixability is what keeps an honest scan from
+becoming a wall of noise nobody reads.
+
+## Keeping it reproducible: lockfile and Dependabot
+
+A scan is only useful if it's **reproducible**: today's result on your machine
+has to match CI's result tomorrow. The **lockfile** is what gives you that. Your
+`package.json` may say `^4.18.0` —a range— but `pnpm-lock.yaml` **pins** the
+exact version that was installed, including every transitive. Trivy reads that
+pin, so the scan is deterministic: same input, same result. Without a lockfile,
+two installs could resolve different versions and the scan becomes a lottery.
+
+But pinning freezes the tree: if you never update, new CVEs pile up silently.
+That's where **Dependabot** comes in. It watches your lockfiles, and when a new
+CVE appears or a release fixes one, it **opens a PR** with the bump (and raises a
+security alert on the repo). You review the PR, let CI run the tests, and merge.
+The lockfile gives you reproducible scans; Dependabot keeps you current without
+auditing by hand.
+
+## The CI job
+
+The local run becomes a gate in the module-4 pipeline. The stable form today is
+the official Trivy action:
+
+```yaml
+  sca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy SCA (gate)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          # Fail the build only on HIGH/CRITICAL: that's the gate
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+```
+
+The option that turns the scan into a **gate** is `--exit-code 1 --severity
+HIGH,CRITICAL` (here expressed as `exit-code` + `severity` in the action): the
+job fails —and blocks the merge— only when there's a `HIGH` or `CRITICAL` CVE.
+`LOW`/`MEDIUM` still show up in the report so you can see them, but they don't
+fail the build. It's the same anti alert-fatigue discipline: the gate fires on
+what truly matters, not on every minor finding.
+
+In the next lesson we go down to git history: the **secrets** that leak in a
+commit and why deleting them isn't enough.
