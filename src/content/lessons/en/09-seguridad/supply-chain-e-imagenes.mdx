@@ -109,14 +109,14 @@ hence the `permissions: id-token: write`).
       - uses: actions/checkout@v4
       # Gate: fail the build if there are HIGH or CRITICAL
       - name: Scan image (gate)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
           image-ref: ghcr.io/v-dev-cl/worker:main
           exit-code: '1'
           severity: HIGH,CRITICAL
       # SBOM as an artifact you keep for the next CVE day
       - name: Generate SBOM
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
           image-ref: ghcr.io/v-dev-cl/worker:main
           format: cyclonedx

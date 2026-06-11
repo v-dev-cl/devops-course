@@ -109,14 +109,14 @@ artefacto, y cosign firma la imagen ya publicada (keyless vía OIDC, por eso el
       - uses: actions/checkout@v4
       # Gate: falla el build si hay HIGH o CRITICAL
       - name: Scan image (gate)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
           image-ref: ghcr.io/v-dev-cl/worker:main
           exit-code: '1'
           severity: HIGH,CRITICAL
       # SBOM como artefacto que guardas para el día del próximo CVE
       - name: Generate SBOM
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
           image-ref: ghcr.io/v-dev-cl/worker:main
           format: cyclonedx
