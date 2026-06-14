@@ -1,0 +1,92 @@
+---
+title: 'Defense in depth: the allowlist isn''t enough'
+description: An IP allowlist is a good perimeter but a flat trust zone.
+objectives:
+  - Explain why an IP allowlist creates a flat trust zone
+  - Authenticate datastores even when "only our servers" can reach them
+  - Segment and apply least privilege between services
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+You closed the perimeter. The firewall only lets in an allowlist of IPs: your own
+nodes. From the outside, nobody talks to your database or your queues. You feel
+covered. But there's a question the allowlist doesn't answer: **what happens when one
+of those inside nodes is the one that gets compromised?** In the fictional **DealHive**
+fleet, the answer was uncomfortable: `extractors-1` fell, and from there you could
+reach everything.
+
+## An allowlist is a north-south control, not east-west
+
+An IP allowlist is a **perimeter** control: it governs the traffic that crosses the
+edge, what comes in and goes out (north-south). That's good and you need it. The
+problem is what it does **not** govern: the traffic **inside** the perimeter, between
+your own machines (east-west).
+
+If your only defense is "only our servers can reach the datastore", then all your
+servers are equally trusted by one another. That's a **flat trust zone**: once
+you're inside, everything talks to everything without asking anything. The allowlist
+drew a high wall around the neighborhood, but inside, no house has a lock.
+
+In DealHive the wall existed: the provider firewall only let the fleet's nodes
+through. But `data-1` (the database and cache) and `bus-1` (the queue) asked nobody
+for credentials. Why would they, if "only our servers" can reach them?
+
+## A compromised host turns the perimeter into a single line of defense
+
+Assume breach. It isn't pessimism: it's the baseline assumption of any serious
+design. A scraper like `extractors-1` runs code that touches hostile HTML all day, it
+has dependencies, it has surface. One day one of those services falls —an RCE, a
+leaked credential, a poisoned image.
+
+The attacker is now **inside the allowlist**. They have an IP from the allowlist. And
+they find a Redis with no password on `data-1` and an open Mongo on `bus-1`, because
+they "were on the private network". A single command is enough:
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Check whether the Redis on data-1 accepts commands without authentication (a PONG with no key asked for is the red flag)."
+  accept={[ 'redis-cli -h data-1 ping', /^redis-cli -h \S+ ping$/ ]}
+  hints={["The command is 'redis-cli -h <host> ping'.", "The cache host in the example is data-1. If it answers PONG with no key, there's no auth."]}
+  solution="redis-cli -h data-1 ping"
+/>
+
+If that returns `PONG`, there's nothing to authenticate: the datastore trusts anyone
+who can connect. A Redis, Memcached, Mongo, or Elasticsearch with no auth on the
+internal network is the classic recipe for **lateral movement**: the compromised host
+hops from one service to the next without ever hitting a single password again. The
+perimeter was your only layer, and it's already on the inside.
+
+## Defense in depth: layers that don't depend on the perimeter
+
+Defense in depth means not betting everything on a single control. If the perimeter
+falls, let the attacker hit another layer. And another. Three that apply here:
+
+**1. Authenticate and authorize service to service, even inside.** This is the heart
+of zero-trust: the network is not an identity. Have `data-1` and `bus-1` require
+credentials even when the connection comes from the private network. "Only our
+servers can reach it" is not authentication; it's an assumption a compromised host
+breaks in a second.
+
+**2. Least privilege.** Each service with its own credential, not one key shared by
+the whole fleet. And that credential **scoped**: the scraper's database user writes to
+its own table and nothing else; it isn't a cluster admin. If `extractors-1` falls, the
+damage reaches as far as *its* permission reaches, not as far as the network reaches.
+
+**3. Segmentation.** Don't let everything talk to everything. Inside the cluster, a
+**NetworkPolicy** that allows traffic only between the pods that genuinely need to
+talk. Between nodes, separate subnets instead of one flat network. Segmentation cuts
+the **blast radius**: even if a host falls, it can't reach half the fleet.
+
+No layer is perfect alone. The allowlist filters the outsiders, auth stops the
+insider that shouldn't be there, least privilege limits what they achieve if they get
+in, and segmentation contains how far they spread. That redundancy —not one high
+wall— is what holds the system up when something fails.
+
+DealHive learned the lesson with `extractors-1`: the perimeter was well closed, but
+inside it was a flat zone. Putting a password on `data-1` and `bus-1`, giving each
+service its own scoped credential, and segmenting with NetworkPolicy didn't replace
+the allowlist: it **complemented** it. The design question is no longer "can they get
+in?", but "when one of ours falls, how far does it reach?".
