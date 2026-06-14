@@ -1,0 +1,95 @@
+---
+title: The host firewall does not protect your Kubernetes
+description: Why ufw does not save your services on bare-metal k8s, and what the real control is.
+objectives:
+  - Explain why the CNI's rules make ufw fail to protect NodePort/LoadBalancer
+  - Use the provider firewall as the real perimeter control
+  - Apply NetworkPolicy for pod-to-pod traffic
+minutes: 16
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+You have a bare-metal Kubernetes —in the fictional **DealHive** fleet, each node
+is its own single-node k3s cluster— and you believe the host firewall protects
+you. You run `ufw deny` on a port, you see the rule active, and you sleep
+soundly. The problem: on k8s that almost never does what you think. This lesson
+takes that trap apart and shows you what the real perimeter control is.
+
+## The trap: ufw doesn't see your services' traffic
+
+DealHive exposed `data-1`'s database with a **NodePort** Service. Someone, just
+in case, added a ufw rule to deny that port from outside. The rule was there,
+visible in `ufw status`. And still, the database kept answering anyone who hit it
+from the internet. It wasn't a syntax error or an un-rebooted node: it's **how
+Kubernetes networking works**.
+
+When you install a CNI (Calico, Flannel, Cilium, whichever) and kube-proxy, those
+components **program their own iptables/nftables rules** on the node. They aren't
+cosmetic: they are how a packet arriving at the `NodePort` ends up redirected to
+the right pod, wherever it lives.
+
+Here is the detail that explains everything. The NodePort redirection is done
+with **DNAT in the PREROUTING chain of the `nat` table**. That chain is
+**evaluated before** the `INPUT` chain of the `filter` table, which is where ufw
+puts its rules. By the time ufw "should" see the packet, it has already been
+rewritten (DNAT) and forwarded toward the pod. The ufw `deny` is never applied to
+the service's traffic: it runs too late, in the wrong chain.
+
+The uncomfortable conclusion: **the CNI/kube-proxy rules run first**, so a ufw
+rule over a NodePort (or a LoadBalancer, via MetalLB on bare-metal) does not block
+it. Your "firewall" is looking the other way.
+
+```
+   packet →  PREROUTING (nat)   ← here kube-proxy DNATs to the pod
+                   │
+                   ▼
+              FORWARD ─────────→  pod
+                   ╳
+              INPUT (filter)     ← here lives the ufw rule: it never sees it
+```
+
+## The real perimeter control: the provider firewall
+
+If the host firewall isn't trustworthy for this, what is? The **provider or
+external firewall**: the one that lives **outside the host**, ahead of the
+machine. In a cloud it's the equivalent of a security group; on bare-metal it can
+be the datacenter firewall or a perimeter appliance. The key is that it filters
+the packet **before** it touches the CNI chains. Since it doesn't compete with the
+node's iptables, its `deny` does win.
+
+A practical rule for DealHive: `data-1`'s NodePort port isn't closed with ufw,
+it's closed at the external firewall, allowing through only the origins that
+genuinely need to reach it (for example, a documentation IP like `203.0.113.10`).
+The perimeter lives outside the node, not inside it.
+
+To audit what you're exposing, start by listing the services across the whole
+fleet and looking at which are NodePort or LoadBalancer:
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="List the services in all namespaces to see which ones expose NodePort."
+  accept={[ 'kubectl get svc -A', /^kubectl get (svc|services) -A$/, 'kubectl get svc --all-namespaces' ]}
+  hints={["It's 'kubectl get svc' with the all-namespaces flag.", "-A is the shorthand for --all-namespaces."]}
+  solution="kubectl get svc -A"
+/>
+
+A `ClusterIP` is internal and doesn't worry you from outside. The `NodePort` and
+`LoadBalancer` ones are the ones that open a reachable port on the node: those are
+your exposure surface, and the ones the external firewall has to cover.
+
+## Inside the cluster: NetworkPolicy
+
+The provider firewall governs the **edge** (who enters the node from outside).
+But inside, between pods, the control is another: **NetworkPolicy**. It's a
+Kubernetes object that says which pods can talk to which pods, and the **CNI
+enforces it** (the same components that complicated things with ufw now play in
+your favor). Without NetworkPolicy, all pods talk to each other freely; with it,
+you segment east-west traffic and limit what reaches, say, `data-1`'s database
+from the rest of the fleet.
+
+Two controls, two planes: the external firewall for the perimeter (north-south),
+and NetworkPolicy for pod-to-pod traffic (east-west). The host firewall —ufw,
+iptables by hand— **is neither of the two** for k8s service traffic. Internalizing
+that is the difference between believing you're protected and being protected.

@@ -9,7 +9,8 @@ export type ModuleId =
   | '06-terraform'
   | '07-observabilidad'
   | '08-cloud-aws'
-  | '09-seguridad';
+  | '09-seguridad'
+  | '10-seguridad-red';
 
 export type LessonStatus = 'ready' | 'outline';
 
@@ -159,6 +160,17 @@ export const curriculum: ModuleDef[] = [
       { slug: 'escaneo-de-secretos', status: 'ready' },
       { slug: 'supply-chain-e-imagenes', status: 'ready' },
       { slug: 'policy-as-code', status: 'ready' },
+    ],
+  },
+  {
+    id: '10-seguridad-red',
+    title: { es: 'Seguridad de red e infraestructura', en: 'Network & Infrastructure Security' },
+    description: {
+      es: 'El perímetro en runtime: firewall en k8s bare-metal, CDN y origen, confianza cero y red privada.',
+      en: 'The runtime perimeter: bare-metal k8s firewall, CDN and origin, zero-trust, and private networking.',
+    },
+    lessons: [
+      { slug: 'firewall-en-kubernetes', status: 'ready' },
     ],
   },
 ];

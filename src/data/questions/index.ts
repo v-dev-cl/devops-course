@@ -44,6 +44,7 @@ import { questions as m09sup } from './lessons/09-seguridad/supply-chain-e-image
 import { questions as m09pac } from './lessons/09-seguridad/policy-as-code';
 import { questions as m05mig } from './lessons/05-kubernetes-gitops/migrar-a-gitops';
 import { questions as m05hns } from './lessons/05-kubernetes-gitops/hub-and-spoke';
+import { questions as m10fw } from './lessons/10-seguridad-red/firewall-en-kubernetes';
 
 /** lessonId -> lesson quiz. Content tasks register each ready lesson here. */
 export const lessonQuizzes: Record<string, QuizQuestion[]> = {
@@ -92,4 +93,5 @@ export const lessonQuizzes: Record<string, QuizQuestion[]> = {
   '09-seguridad/policy-as-code': m09pac,
   '05-kubernetes-gitops/migrar-a-gitops': m05mig,
   '05-kubernetes-gitops/hub-and-spoke': m05hns,
+  '10-seguridad-red/firewall-en-kubernetes': m10fw,
 };
