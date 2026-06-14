@@ -48,14 +48,17 @@ porque "estaban en la red privada". Un solo comando le basta:
 <TerminalExercise
   client:visible
   locale="es"
-  task="Comprueba si el Redis de data-1 acepta comandos sin autenticación (un PONG sin pedir clave es la señal de alarma)."
+  task="Comprueba si alcanzas el Redis de data-1 sin credenciales desde otro host de la red interna."
   accept={[ 'redis-cli -h data-1 ping', /^redis-cli -h \S+ ping$/ ]}
-  hints={["El comando es 'redis-cli -h <host> ping'.", "El host del caché en el ejemplo es data-1. Si responde PONG sin clave, no hay auth."]}
+  hints={["El comando es 'redis-cli -h <host> ping'.", "El host del caché en el ejemplo es data-1."]}
   solution="redis-cli -h data-1 ping"
 />
 
-Si eso devuelve `PONG`, no hay nada que autenticar: el datastore confía en cualquiera
-que pueda conectarse. Un Redis, Memcached, Mongo o Elasticsearch sin auth en la red
+Si `PING` ni siquiera conecta, el host no es alcanzable. Si devuelve `PONG`, confirma
+que llegas — pero ojo: en un Redis con `requirepass`, `PING` igual responde `PONG`
+antes de autenticar. Para saber si de verdad **no hay auth**, corre un comando de datos
+como `redis-cli -h data-1 KEYS '*'`: si devuelve datos en vez de `NOAUTH`, el datastore
+confía en cualquiera que pueda conectarse. Un Redis, Memcached, Mongo o Elasticsearch sin auth en la red
 interna es la receta clásica del **movimiento lateral**: el host comprometido salta
 de un servicio al siguiente sin volver a toparse con una sola contraseña. El
 perímetro era tu única capa, y ya está del lado de adentro.

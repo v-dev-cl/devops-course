@@ -47,14 +47,17 @@ they "were on the private network". A single command is enough:
 <TerminalExercise
   client:visible
   locale="en"
-  task="Check whether the Redis on data-1 accepts commands without authentication (a PONG with no key asked for is the red flag)."
+  task="Check whether you can reach the Redis on data-1 with no credentials from another host on the internal network."
   accept={[ 'redis-cli -h data-1 ping', /^redis-cli -h \S+ ping$/ ]}
-  hints={["The command is 'redis-cli -h <host> ping'.", "The cache host in the example is data-1. If it answers PONG with no key, there's no auth."]}
+  hints={["The command is 'redis-cli -h <host> ping'.", "The cache host in the example is data-1."]}
   solution="redis-cli -h data-1 ping"
 />
 
-If that returns `PONG`, there's nothing to authenticate: the datastore trusts anyone
-who can connect. A Redis, Memcached, Mongo, or Elasticsearch with no auth on the
+If `PING` doesn't even connect, the host is unreachable. If it returns `PONG`, that
+confirms you can reach it — but note: a Redis with `requirepass` set still answers
+`PONG` to `PING` before you authenticate. To tell whether there's truly **no auth**,
+run a data command like `redis-cli -h data-1 KEYS '*'`: if it returns data instead of
+`NOAUTH`, the datastore trusts anyone who can connect. A Redis, Memcached, Mongo, or Elasticsearch with no auth on the
 internal network is the classic recipe for **lateral movement**: the compromised host
 hops from one service to the next without ever hitting a single password again. The
 perimeter was your only layer, and it's already on the inside.
