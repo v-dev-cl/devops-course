@@ -98,6 +98,7 @@ export const curriculum: ModuleDef[] = [
       { slug: 'argocd-gitops', status: 'ready' },
       { slug: 'secretos-con-eso', status: 'ready' },
       { slug: 'multi-cluster-applicationset', status: 'ready' },
+      { slug: 'migrar-a-gitops', status: 'ready' },
     ],
   },
   {
