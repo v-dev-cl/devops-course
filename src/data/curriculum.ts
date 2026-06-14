@@ -171,6 +171,7 @@ export const curriculum: ModuleDef[] = [
     },
     lessons: [
       { slug: 'firewall-en-kubernetes', status: 'ready' },
+      { slug: 'cdn-y-origen', status: 'ready' },
     ],
   },
 ];

@@ -1,0 +1,97 @@
+---
+title: 'CDN and origin: the bypass almost nobody closes'
+description: A CDN only protects you if the origin can't be reached directly.
+objectives:
+  - Explain how an attacker bypasses the CDN by finding the origin IP
+  - Lock the origin firewall to the CDN's published IP ranges
+  - Harden further with authenticated origin pull
+minutes: 14
+---
+
+You put your site behind a CDN with a WAF. You see rules blocking injections, rate
+limiting, bot management. You feel covered. But there's a question almost nobody
+asks: **what happens if someone talks directly to your origin server, without going
+through the CDN?** If the answer is "it answers anyway", then all that WAF is
+decorative. In the fictional **DealHive** fleet, the origin behind `edge-eu` was
+still answering on its raw IP, and everything slipped through there.
+
+## A CDN only protects the traffic that passes through it
+
+The idea of a CDN with a WAF is simple: the browser resolves your domain to the
+CDN's IPs, the CDN inspects the request, filters it, and only then forwards it to
+your **origin** (the real server where your app runs). The WAF lives in the CDN. By
+definition, **it can only inspect what passes through the CDN**.
+
+The problem is that your origin is still a machine with its own IP, listening on
+80/443. The domain points to the CDN, yes, but the origin's IP doesn't disappear:
+it's still there, reachable, if someone knows it. And finding it out is easier than
+it looks.
+
+## How the CDN gets bypassed: finding the origin IP
+
+The internet is being scanned all the time. There are services that sweep the entire
+IPv4 address space, touch every port, record what answers, and publish a queryable
+index —think of search engines like Shodan or Censys, but the mechanism is generic:
+anyone can scan. Your origin, if it answers on 443, **gets indexed with its TLS
+banner, its certificate, and its behavior**.
+
+Add to that the historical leaks: **passive DNS** records (snapshots of how your
+domain used to resolve before you put the CDN in front), the **Certificate
+Transparency** logs (every issued certificate is public and lists the names it
+covers), an old subdomain pointing at the origin, an email whose headers reveal the
+IP. The attacker pieces these clues together, lands on the origin's IP, and talks to
+it **directly**:
+
+```
+legitimate browser → CDN (WAF inspects) → origin
+attacker           → ──────────────────  → origin   (bypassed the WAF)
+```
+
+If the origin answers that direct connection, the WAF never saw the request. The
+filtering, the rate limiting, the bot management: all bypassed. There was no bug in
+the WAF; the traffic simply didn't pass through it.
+
+## The fix: lock the origin to the CDN ranges
+
+The real defense isn't in the CDN, it's at the **origin**: have it reject any
+connection that doesn't come from the CDN. Serious CDNs **publish their egress IP
+ranges** (the addresses they forward traffic to your origin from) precisely for this.
+You take that list and configure the origin firewall to **allow 80/443 only from
+those ranges and deny the rest**.
+
+With a fictional documentation range `203.0.113.0/24` standing in for the CDN's, the
+shape of the origin firewall is:
+
+```
+# Only the CDN can talk to the origin on 80/443.
+allow from 203.0.113.0/24 to any port 80,443 proto tcp
+# Everything else: denied.
+deny  from any           to any port 80,443 proto tcp
+```
+
+Now the attacker's direct connection reaches a port that doesn't answer it: it falls
+into the `deny`. The only path to the origin is again **through the CDN**, which is
+where the WAF lives. The perimeter is now consistent with what you thought you had.
+
+### A second layer: origin authentication
+
+The IP allowlist is good, but IPs can be spoofed and the CDN's ranges are shared by
+many customers. So add **authenticated origin pull**: the CDN presents a client
+certificate when it connects, and the origin **only accepts TLS if that certificate
+is the CDN's**. That way the origin doesn't trust "it comes from a range", but "it
+comes authenticated as my CDN". It's layered defense: IP filtering at the firewall,
+and cryptographic verification at the TLS layer.
+
+## Why changing the IP isn't the fix
+
+The temptation is: "they found my IP, I'll change it and I'm done". It doesn't last.
+As soon as the new origin answers on 443, the scanners find it again; the next
+certificate you issue shows up in the Certificate Transparency logs; passive DNS
+records any resolution that leaks. Hiding the IP is obfuscation, and obfuscation
+undoes itself over time. The only thing that **holds** is the rule enforced at the
+origin's edge: if only the CDN can connect, it doesn't matter how many discover the
+IP. You don't hide it: you make it useless to everyone but the CDN.
+
+DealHive learned this with `edge-eu`: putting the CDN in front wasn't enough. Until
+the origin firewall was locked down to the CDN's ranges —and the origin certificate
+was added— the WAF was a door with a guard next to an open window.
