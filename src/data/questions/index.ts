@@ -42,6 +42,12 @@ import { questions as m09sca } from './lessons/09-seguridad/dependencias-y-sca';
 import { questions as m09sec } from './lessons/09-seguridad/escaneo-de-secretos';
 import { questions as m09sup } from './lessons/09-seguridad/supply-chain-e-imagenes';
 import { questions as m09pac } from './lessons/09-seguridad/policy-as-code';
+import { questions as m05mig } from './lessons/05-kubernetes-gitops/migrar-a-gitops';
+import { questions as m05hns } from './lessons/05-kubernetes-gitops/hub-and-spoke';
+import { questions as m10fw } from './lessons/10-seguridad-red/firewall-en-kubernetes';
+import { questions as m10cdn } from './lessons/10-seguridad-red/cdn-y-origen';
+import { questions as m10dep } from './lessons/10-seguridad-red/defensa-en-profundidad';
+import { questions as m10mesh } from './lessons/10-seguridad-red/red-privada-entre-nodos';
 
 /** lessonId -> lesson quiz. Content tasks register each ready lesson here. */
 export const lessonQuizzes: Record<string, QuizQuestion[]> = {
@@ -88,4 +94,10 @@ export const lessonQuizzes: Record<string, QuizQuestion[]> = {
   '09-seguridad/escaneo-de-secretos': m09sec,
   '09-seguridad/supply-chain-e-imagenes': m09sup,
   '09-seguridad/policy-as-code': m09pac,
+  '05-kubernetes-gitops/migrar-a-gitops': m05mig,
+  '05-kubernetes-gitops/hub-and-spoke': m05hns,
+  '10-seguridad-red/firewall-en-kubernetes': m10fw,
+  '10-seguridad-red/cdn-y-origen': m10cdn,
+  '10-seguridad-red/defensa-en-profundidad': m10dep,
+  '10-seguridad-red/red-privada-entre-nodos': m10mesh,
 };

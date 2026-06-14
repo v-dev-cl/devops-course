@@ -9,7 +9,8 @@ export type ModuleId =
   | '06-terraform'
   | '07-observabilidad'
   | '08-cloud-aws'
-  | '09-seguridad';
+  | '09-seguridad'
+  | '10-seguridad-red';
 
 export type LessonStatus = 'ready' | 'outline';
 
@@ -98,6 +99,8 @@ export const curriculum: ModuleDef[] = [
       { slug: 'argocd-gitops', status: 'ready' },
       { slug: 'secretos-con-eso', status: 'ready' },
       { slug: 'multi-cluster-applicationset', status: 'ready' },
+      { slug: 'migrar-a-gitops', status: 'ready' },
+      { slug: 'hub-and-spoke', status: 'ready' },
     ],
   },
   {
@@ -157,6 +160,20 @@ export const curriculum: ModuleDef[] = [
       { slug: 'escaneo-de-secretos', status: 'ready' },
       { slug: 'supply-chain-e-imagenes', status: 'ready' },
       { slug: 'policy-as-code', status: 'ready' },
+    ],
+  },
+  {
+    id: '10-seguridad-red',
+    title: { es: 'Seguridad de red e infraestructura', en: 'Network & Infrastructure Security' },
+    description: {
+      es: 'El perímetro en runtime: firewall en k8s bare-metal, CDN y origen, confianza cero y red privada.',
+      en: 'The runtime perimeter: bare-metal k8s firewall, CDN and origin, zero-trust, and private networking.',
+    },
+    lessons: [
+      { slug: 'firewall-en-kubernetes', status: 'ready' },
+      { slug: 'cdn-y-origen', status: 'ready' },
+      { slug: 'defensa-en-profundidad', status: 'ready' },
+      { slug: 'red-privada-entre-nodos', status: 'ready' },
     ],
   },
 ];

@@ -1,0 +1,117 @@
+---
+title: Migrar a GitOps en un sistema vivo
+description: Adoptar Argo CD sobre una flota ya desplegada a mano, sin downtime.
+objectives:
+  - Instalar Argo CD en modo observación (sin automated) para diffear contra el estado real
+  - Reconciliar los manifiestos con lo que ya corre antes de tomar control
+  - Cortar a sync automático un servicio a la vez y hacer rollback con git revert
+minutes: 18
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+import LabCheck from '@/components/LabCheck';
+
+**DealHive** es una flota ficticia de ~10 clusters k3s de un nodo cada uno
+(`edge-eu`, `extractors-1`, `data-1`, `bus-1`, `search-1`, `metrics-1`,
+`payments-1`) corriendo ~35 microservicios. Su CI es sólido: cada push hace
+build, test y empuja una imagen inmutable a `ghcr.io/dealhive/<svc>`. El problema
+no es construir, es desplegar: alguien hace `kubectl apply` a mano contra cada
+cluster. La lección [argocd-gitops](/es/05-kubernetes-gitops/argocd-gitops/)
+instala Argo CD en un cluster **fresco**, donde no hay nada que romper. Acá el
+escenario es el opuesto y el más común: el sistema **ya está vivo**, sirviendo
+tráfico, y nadie te va a perdonar un minuto de downtime por adoptar GitOps.
+
+## El miedo legítimo
+
+El bloque `syncPolicy.automated` con `prune` y `selfHeal` que viste en la lección
+fresca es exactamente lo que **no** quieres apuntar de golpe a un cluster vivo.
+Si tus manifiestos en git no coinciden al 100% con lo que corre —y casi nunca
+coinciden, porque hubo `kubectl edit`, `kubectl scale` y parches de
+emergencia—, el primer sync automático **sobreescribe** el estado real con el de
+git y rompe producción. El drift que en un cluster fresco no existe, en uno vivo
+es la regla.
+
+## Paso 1: instala Argo CD en modo observación
+
+La clave es instalar Argo CD apuntando a tu repo pero con una `syncPolicy` **sin
+el bloque `automated`**. Argo CD entonces solo *mira*: compara git contra el
+cluster y marca la Application `OutOfSync`, pero **no aplica nada**. Es un sync
+manual; el control sigue en tus manos. Empieza por `edge-eu`:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dealhive-edge
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/dealhive/manifests.git
+    path: clusters/edge-eu
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: edge
+  syncPolicy:
+    # Sin bloque 'automated': Argo CD observa y diffea, no aplica.
+    syncOptions:
+      - CreateNamespace=true
+```
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-5/step-1" locale="es" />
+
+## Paso 2: lee el diff y reconcilia
+
+Ahora Argo CD te dice, sin tocar nada, **exactamente** en qué difieren git y el
+estado vivo. Ese diff es tu mapa del drift:
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Muestra el diff entre git y el estado vivo del Application dealhive-edge (sin aplicar nada)."
+  accept={[ 'argocd app diff dealhive-edge', /^argocd app diff \S+$/ ]}
+  hints={["El comando es 'argocd app diff <app>'.", "El Application se llama dealhive-edge."]}
+  solution="argocd app diff dealhive-edge"
+/>
+
+El diff te muestra que `edge-eu` corre 4 réplicas pero git dice 2, que hay una
+variable de entorno parcheada a mano, que la imagen viva es `ghcr.io/dealhive/edge:sha-abc`
+pero git apunta a otra. **No sincronices todavía.** El movimiento seguro es al
+revés: **edita los manifiestos en git para que reflejen la realidad** —sube git a
+4 réplicas, agrega la variable, fija la imagen viva—. Cuando git y el cluster
+coinciden, el primer sync es un **no-op**: Argo CD no cambia nada porque ya no hay
+nada que cambiar. Acabas de tomar control sin mover un pod.
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-5/step-2" locale="es" />
+
+## Paso 3: promueve un servicio a la vez
+
+Recién cuando `dealhive-edge` está `Synced` con el estado real lo promueves a
+sync automático. Agregas el bloque `automated`:
+
+```yaml
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+```
+
+Desde acá `edge-eu` es GitOps de verdad: un commit despliega, un `kubectl edit` a
+mano se revierte solo (selfHeal), borrar un recurso de git lo borra del cluster
+(prune). Y el **rollback** ya no es un `kubectl apply` de pánico: es un
+`git revert` del commit que metió el cambio, que Argo CD reconcilia solo.
+
+Lo haces **un servicio a la vez** —`edge-eu`, después `extractors-1`, después
+`data-1`— y nunca toda la flota de golpe. Si algo se ve raro al promover uno, el
+resto sigue en modo observación, intacto. La granularidad por Application es tu
+red de seguridad.
+
+<LabCheck client:load stepId="05-kubernetes-gitops/lab-5/step-3" locale="es" />
+
+Verifica que el servicio promovido quede `Synced/Healthy` con
+`kubectl get applications -n argocd`. Repite el ciclo —observar, reconciliar,
+promover— para cada cluster, y la flota entera pasa de `kubectl apply` a mano a
+GitOps sin un solo segundo de downtime.

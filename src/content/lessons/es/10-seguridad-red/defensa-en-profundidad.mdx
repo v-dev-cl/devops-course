@@ -1,0 +1,98 @@
+---
+title: 'Defensa en profundidad: la lista blanca no basta'
+description: Una allowlist de IPs es un buen perímetro pero una zona de confianza plana.
+objectives:
+  - Explicar por qué una allowlist de IPs crea una zona de confianza plana
+  - Autenticar los datastores aunque "solo nuestros servidores" los alcancen
+  - Segmentar y aplicar mínimo privilegio entre servicios
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+Cerraste el perímetro. El firewall solo deja entrar a una lista blanca de IPs: las de
+tus propios nodos. Desde afuera, nadie le habla a tu base de datos ni a tus colas.
+Te sientes cubierto. Pero hay una pregunta que la allowlist no responde: **¿qué pasa
+cuando uno de esos nodos de adentro es el que está comprometido?** En la flota
+ficticia **DealHive**, la respuesta fue incómoda: `extractors-1` cayó, y desde ahí se
+llegaba a todo.
+
+## Una allowlist es un control norte-sur, no este-oeste
+
+Una allowlist de IPs es un control de **perímetro**: regula el tráfico que cruza el
+borde, lo que entra y sale (norte-sur). Eso está bien y hay que tenerlo. El problema
+es lo que **no** regula: el tráfico **dentro** del perímetro, entre tus propias
+máquinas (este-oeste).
+
+Si tu única defensa es "solo nuestros servidores pueden alcanzar el datastore",
+entonces todos tus servidores son igual de confiables entre sí. Eso es una **zona de
+confianza plana**: una vez adentro, todo le habla a todo sin preguntar nada. La
+allowlist trazó un muro alto alrededor del barrio, pero adentro ninguna casa tiene
+cerradura.
+
+En DealHive el muro existía: el firewall del proveedor solo dejaba pasar a los nodos
+de la flota. Pero `data-1` (la base de datos y el caché) y `bus-1` (la cola) no
+pedían credenciales a nadie. ¿Para qué, si "solo nuestros servidores" los alcanzan?
+
+## Un host comprometido convierte el perímetro en una sola línea de defensa
+
+Asume brecha. No es pesimismo: es el supuesto base de cualquier diseño serio. Un
+scraper como `extractors-1` corre código que toca HTML hostil todo el día, tiene
+dependencias, tiene superficie. Algún día uno de esos servicios cae —una RCE, una
+credencial filtrada, una imagen envenenada.
+
+El atacante ahora está **dentro de la allowlist**. Tiene una IP de la lista blanca.
+Y se encuentra con un Redis sin contraseña en `data-1` y un Mongo abierto en `bus-1`,
+porque "estaban en la red privada". Un solo comando le basta:
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Comprueba si alcanzas el Redis de data-1 sin credenciales desde otro host de la red interna."
+  accept={[ 'redis-cli -h data-1 ping', /^redis-cli -h \S+ ping$/ ]}
+  hints={["El comando es 'redis-cli -h <host> ping'.", "El host del caché en el ejemplo es data-1."]}
+  solution="redis-cli -h data-1 ping"
+/>
+
+Si `PING` ni siquiera conecta, el host no es alcanzable. Si devuelve `PONG`, confirma
+que llegas — pero ojo: en un Redis con `requirepass`, `PING` igual responde `PONG`
+antes de autenticar. Para saber si de verdad **no hay auth**, corre un comando de datos
+como `redis-cli -h data-1 KEYS '*'`: si devuelve datos en vez de `NOAUTH`, el datastore
+confía en cualquiera que pueda conectarse. Un Redis, Memcached, Mongo o Elasticsearch sin auth en la red
+interna es la receta clásica del **movimiento lateral**: el host comprometido salta
+de un servicio al siguiente sin volver a toparse con una sola contraseña. El
+perímetro era tu única capa, y ya está del lado de adentro.
+
+## Defensa en profundidad: capas que no dependen del perímetro
+
+Defensa en profundidad significa no apostarlo todo a un solo control. Si el perímetro
+cae, que el atacante choque con otra capa. Y otra. Tres que aplican acá:
+
+**1. Autenticar y autorizar servicio a servicio, incluso adentro.** Esto es el
+corazón de zero-trust: la red no es una identidad. Que `data-1` y `bus-1` exijan
+credenciales aunque la conexión venga de la red privada. "Solo nuestros servidores lo
+alcanzan" no es autenticación; es una suposición que un host comprometido rompe en un
+segundo.
+
+**2. Mínimo privilegio.** Cada servicio con su propia credencial, no una clave
+compartida por toda la flota. Y esa credencial **acotada**: el usuario de base de
+datos del scraper escribe en su tabla y nada más; no es admin del cluster. Si
+`extractors-1` cae, el daño llega hasta donde llega *su* permiso, no hasta donde
+llega la red.
+
+**3. Segmentación.** Que no todo le pueda hablar a todo. Dentro del cluster, una
+**NetworkPolicy** que permita el tráfico solo entre los pods que de verdad necesitan
+hablarse. Entre nodos, subredes separadas en vez de una sola red plana. La
+segmentación recorta el **blast radius**: aunque un host caiga, no alcanza a la mitad
+de la flota.
+
+Ninguna capa es perfecta sola. La allowlist filtra a los de afuera, la auth detiene
+al de adentro que no debería estar, el mínimo privilegio limita lo que logra si
+entra, y la segmentación contiene hasta dónde se propaga. Esa redundancia —no un solo
+muro alto— es lo que sostiene el sistema cuando algo falla.
+
+DealHive aprendió la lección con `extractors-1`: el perímetro estaba bien cerrado,
+pero adentro era una zona plana. Ponerle contraseña a `data-1` y `bus-1`, darle a
+cada servicio su propia credencial acotada, y segmentar con NetworkPolicy no
+reemplazó la allowlist: la **complementó**. La pregunta de diseño ya no es "¿pueden
+entrar?", sino "cuando uno de los nuestros caiga, ¿hasta dónde llega?".

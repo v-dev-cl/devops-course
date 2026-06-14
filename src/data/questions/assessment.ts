@@ -343,4 +343,42 @@ export const assessmentQuestions: QuizQuestion[] = [
       en: 'Shift-left is running SAST, SCA, secret and image scanning in CI: catching issues when they are cheap to fix, not in a late audit.',
     },
   },
+  {
+    id: 'a-10-1',
+    topic: '10-seguridad-red',
+    text: {
+      es: 'En un k8s bare-metal, configuras `ufw` para bloquear un puerto, pero tu servicio NodePort sigue accesible. ¿Por qué?',
+      en: 'On bare-metal k8s you set `ufw` to block a port, but your NodePort service is still reachable. Why?',
+    },
+    options: [
+      { id: 'a', text: { es: 'Las reglas del CNI corren antes que ufw; el control real es el firewall del proveedor', en: "The CNI's rules run before ufw; the real control is the provider firewall" } },
+      { id: 'b', text: { es: 'ufw no soporta TCP', en: 'ufw does not support TCP' } },
+      { id: 'c', text: { es: 'Necesitas reiniciar el nodo', en: 'You need to reboot the node' } },
+      { id: 'd', text: { es: 'El puerto está en la lista blanca de Kubernetes', en: 'The port is on the Kubernetes allowlist' } },
+    ],
+    correct: ['a'],
+    explanation: {
+      es: 'El CNI inserta sus reglas de iptables/nftables antes que las de ufw, así que NodePort/LoadBalancer quedan expuestos pese a ufw; usa el firewall del proveedor y NetworkPolicy.',
+      en: 'The CNI inserts its iptables/nftables rules ahead of ufw, so NodePort/LoadBalancer stay exposed despite ufw; use the provider firewall and NetworkPolicy.',
+    },
+  },
+  {
+    id: 'a-10-2',
+    topic: '10-seguridad-red',
+    text: {
+      es: 'Tu web está detrás de un CDN con WAF, pero un atacante igual la golpea directo. ¿Cuál es la causa más probable?',
+      en: 'Your site is behind a CDN with a WAF, but an attacker still hits it directly. Most likely cause?',
+    },
+    options: [
+      { id: 'a', text: { es: 'El WAF está mal configurado', en: 'The WAF is misconfigured' } },
+      { id: 'b', text: { es: 'La IP de origen responde directo a cualquiera; hay que limitarla a los rangos del CDN', en: "The origin IP answers anyone directly; it must be locked to the CDN's IP ranges" } },
+      { id: 'c', text: { es: 'El CDN no cachea HTML', en: 'The CDN does not cache HTML' } },
+      { id: 'd', text: { es: 'El certificado TLS expiró', en: 'The TLS certificate expired' } },
+    ],
+    correct: ['b'],
+    explanation: {
+      es: 'Si el origen responde en 80/443 a cualquiera, los escáneres de internet encuentran su IP y saltan el CDN; limita el firewall del origen a los rangos publicados del CDN.',
+      en: 'If the origin answers on 80/443 to anyone, internet scanners find its IP and bypass the CDN; lock the origin firewall to the CDN published ranges.',
+    },
+  },
 ];
