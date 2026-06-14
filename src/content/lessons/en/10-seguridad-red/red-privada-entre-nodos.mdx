@@ -1,0 +1,97 @@
+---
+title: Private networking between nodes with WireGuard/Tailscale
+description: A private mesh for inter-node traffic and the GitOps control plane.
+objectives:
+  - Explain why a private mesh beats allowlist + public internet
+  - Carry Argo CD's hub→spoke traffic over a private overlay
+  - Tell a mesh (WireGuard/Tailscale) apart from a classic VPN gateway
+minutes: 15
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+The fictional **DealHive** fleet no longer lives on a single provider. `edge-eu` is on
+a European cloud, `data-1` on another, cheaper provider for data, and `metrics-1` in a
+third region. It works, but each node talks to the others **over the public
+internet**, and the only defense is an IP allowlist on each firewall. The GitOps
+control plane —the Argo CD hub that syncs the whole fleet (you saw it in module 5,
+**hub-and-spoke**)— also crosses the open internet to reach each spoke. There's a
+better way, and it's the one this hand-off leaves recommended as the default practice:
+a **private mesh**.
+
+## An allowlist ties you to public IPs that change
+
+An IP allowlist between providers is fragile. Each node exposes a port to the public
+internet and trusts a list of source IPs. That means `data-1`'s public IP is part of
+your security model: if the provider rotates it, if you scale and a new node appears,
+or if a region uses shared NAT, you're editing allowlists by hand on every firewall.
+And even with a perfect list, the traffic still travels **in the clear across
+whoever's network sits in the middle**, unless each service brings its own TLS. That's
+a lot of perimeter to maintain for something that's still exposed.
+
+A **mesh** flips the problem around: instead of exposing services on public IPs and
+filtering who gets in, the nodes form an **encrypted overlay network** among
+themselves. Each node gets a stable overlay IP (say from the CGNAT `100.x` range, or a
+documentation range if you prefer), and `edge-eu` talks to `data-1` over that private
+IP. From the public internet, `data-1`'s port doesn't even need to be open. Node-to-node
+connectivity is end-to-end encrypted, across providers and regions included, without
+any service left hanging on the open network.
+
+## WireGuard underneath, Tailscale as the control plane
+
+**WireGuard** is the protocol: kernel-level encrypted tunnels where each peer
+exchanges its **public key** with the others and traffic rides those tunnels. It's
+fast and simple, but by hand you have to distribute keys, pin endpoints, and deal with
+NAT yourself.
+
+**Tailscale** (or the alternatives **Headscale** and **Netbird**) is a **control
+plane** built on top of WireGuard: it distributes the keys, traverses NAT, discovers
+peers, and lets you define **ACLs** over who talks to whom. You never touch keys by
+hand; each node joins the mesh and the control plane does the rest. WireGuard is still
+the one doing the encryption; Tailscale only coordinates.
+
+To see the state of the mesh, you look at the peers:
+
+<TerminalExercise
+  client:visible
+  locale="en"
+  task="Show the state of the Tailscale mesh peers."
+  accept={[ 'tailscale status', /^tailscale status$/, 'wg show' ]}
+  hints={["With Tailscale it's 'tailscale status'.", "With plain WireGuard it would be 'wg show'."]}
+  solution="tailscale status"
+/>
+
+`tailscale status` lists the overlay peers and their mesh IP; with plain WireGuard,
+`wg show` shows the peers and the last handshake of each tunnel. If a peer doesn't show
+up or there's no handshake, that node isn't talking over the private network.
+
+## The GitOps control plane rides the overlay too
+
+Here's the tie-back to module 5. The Argo CD hub syncs each spoke by opening a
+connection to each cluster's API server. If that hub→spoke connection goes over the
+public internet, you expose `metrics-1`'s API server to the world and you're back to
+depending on an allowlist. With the mesh, the hub talks to each spoke **over its
+overlay IP**: each cluster's API server only listens on the private network and never
+appears on the public internet. Your GitOps control plane stops being an exposed
+surface.
+
+This **does not replace** the perimeter or the defense in depth from the previous
+lesson: the mesh is one more layer. The datastores still require credentials, the
+NetworkPolicies still segment inside the cluster. The mesh only makes sure that
+traffic between nodes —service to service and hub to spokes— never touches the open
+internet and goes encrypted by default.
+
+## Full mesh vs classic VPN gateway
+
+A classic VPN is **hub-and-spoke at the network level**: every node connects to a
+central **concentrator** and traffic between two nodes loops back through that gateway.
+The concentrator is a bottleneck and a single point of failure: if it falls, the whole
+private network falls, and a node in Europe talking to another in Europe can end up
+routing through a gateway in a different region.
+
+A **full mesh** is **peer-to-peer**: each pair of nodes builds a **direct** WireGuard
+tunnel between them. `edge-eu` talks to `data-1` over the shortest path, without going
+through any concentrator. There's no single point that takes the network down, and the
+latency is that of the direct link. That's why, to connect a fleet spread across
+providers and regions, the mesh is the default recommendation: it gives you private,
+encrypted connectivity between all nodes without a chokepoint to maintain or expose.

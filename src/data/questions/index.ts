@@ -47,6 +47,7 @@ import { questions as m05hns } from './lessons/05-kubernetes-gitops/hub-and-spok
 import { questions as m10fw } from './lessons/10-seguridad-red/firewall-en-kubernetes';
 import { questions as m10cdn } from './lessons/10-seguridad-red/cdn-y-origen';
 import { questions as m10dep } from './lessons/10-seguridad-red/defensa-en-profundidad';
+import { questions as m10mesh } from './lessons/10-seguridad-red/red-privada-entre-nodos';
 
 /** lessonId -> lesson quiz. Content tasks register each ready lesson here. */
 export const lessonQuizzes: Record<string, QuizQuestion[]> = {
@@ -98,4 +99,5 @@ export const lessonQuizzes: Record<string, QuizQuestion[]> = {
   '10-seguridad-red/firewall-en-kubernetes': m10fw,
   '10-seguridad-red/cdn-y-origen': m10cdn,
   '10-seguridad-red/defensa-en-profundidad': m10dep,
+  '10-seguridad-red/red-privada-entre-nodos': m10mesh,
 };

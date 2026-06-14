@@ -173,6 +173,7 @@ export const curriculum: ModuleDef[] = [
       { slug: 'firewall-en-kubernetes', status: 'ready' },
       { slug: 'cdn-y-origen', status: 'ready' },
       { slug: 'defensa-en-profundidad', status: 'ready' },
+      { slug: 'red-privada-entre-nodos', status: 'ready' },
     ],
   },
 ];
