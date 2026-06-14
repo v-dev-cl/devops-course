@@ -1,0 +1,101 @@
+---
+title: 'Hub-and-spoke: un Argo CD, muchos clusters'
+description: La topología y el modelo de seguridad de un controlador GitOps central que despliega a toda la flota.
+objectives:
+  - Distinguir dónde corre el controlador de dónde despliega
+  - Registrar clusters spoke en un hub con argocd cluster add
+  - Explicar por qué el hub es la caja a endurecer y qué pasa si se cae
+minutes: 16
+---
+
+import TerminalExercise from '@/components/TerminalExercise';
+
+En la lección [multi-cluster-applicationset](/es/05-kubernetes-gitops/multi-cluster-applicationset/)
+viste el **generador**: un solo template de ApplicationSet que produce N
+Applications. Lo que esa lección dejó pendiente es la **topología** debajo: ¿desde
+dónde se despliega a varios clusters, y qué implica de seguridad? Esta lección
+cubre eso —el patrón **hub-and-spoke**— sin repetir el generador.
+
+## Un hub, muchos spokes
+
+En la flota ficticia **DealHive** (~10 clusters k3s de un nodo) no instalas un
+Argo CD por cluster. Eso serían ~10 controladores que mantener, actualizar y
+vigilar. El patrón es al revés: **un solo Argo CD —el hub—** que despliega a
+todos los demás clusters —los **spokes**—. DealHive corre el hub en un cluster
+dedicado y desde ahí despliega a `edge-eu`, `extractors-1` y `data-1`.
+
+```
+            ┌─────────────┐
+            │   Argo CD   │   ← el HUB (corre acá)
+            │    (hub)    │
+            └──────┬──────┘
+        ┌──────────┼──────────┐
+        ▼          ▼          ▼
+    edge-eu   extractors-1   data-1   ← los SPOKES (despliega acá)
+```
+
+## Dónde corre vs. dónde despliega
+
+La distinción que más confunde: el controlador **corre** en un solo lugar —el
+hub— pero **despliega** en muchos. El hub tiene los pods de Argo CD
+(`application-controller`, `repo-server`, `server`). Los spokes no tienen Argo CD;
+solo reciben los manifiestos que el hub les aplica vía la API de Kubernetes de
+cada uno. "Dónde corre el controlador" y "dónde aterriza el workload" son dos
+cosas distintas, y el hub-and-spoke las separa a propósito.
+
+## Registrar un spoke
+
+Para que el hub pueda desplegar a un spoke, primero hay que **registrarlo**. Con
+el contexto del spoke en tu kubeconfig, corres:
+
+```bash
+argocd cluster add edge-eu
+```
+
+Esto no es cosmético: `argocd cluster add <contexto>` se conecta al spoke, crea
+ahí un **ServiceAccount** con permisos, y **guarda el kubeconfig/token de ese
+spoke como un Secret dentro del hub**. Desde ese momento el hub tiene
+credenciales para desplegar en `edge-eu`. Repites por cada spoke
+(`extractors-1`, `data-1`), y luego un Application o ApplicationSet apunta su
+`destination.server` a la URL del API server de cada cluster registrado.
+
+Para ver qué spokes conoce el hub:
+
+<TerminalExercise
+  client:visible
+  locale="es"
+  task="Lista los clusters registrados en el hub de Argo CD."
+  accept={[ 'argocd cluster list', /^argocd cluster list$/ ]}
+  hints={["El comando es 'argocd cluster list'.", "Lista los spokes que el hub conoce."]}
+  solution="argocd cluster list"
+/>
+
+## Por qué el hub es la caja a endurecer
+
+Acá está el punto de seguridad que tienes que internalizar. El hub guarda, en su
+almacén interno de Secrets, **las credenciales para desplegar en cada spoke de la
+flota**. Comprometer el hub es comprometer `edge-eu`, `extractors-1`, `data-1` y
+todo lo demás de un solo golpe: quien controla el hub puede aplicar cualquier
+manifiesto a cualquier cluster.
+
+Por eso el hub es **la caja más sensible y la primera a endurecer**: nada de
+exponerla a internet, acceso solo por una red privada, mínimo privilegio,
+auditoría. No es "un cluster más" —es la llave maestra. El módulo 10 retoma esto
+en la lección de **red privada entre nodos**: el tráfico hub→spoke del plano de
+control GitOps debería ir por una overlay privada (WireGuard/Tailscale), nunca
+por el internet público.
+
+## Si el hub se cae
+
+Una pregunta clave de blast radius: **¿qué pasa si el hub se muere?** La respuesta
+tranquilizadora: los spokes **siguen corriendo sus workloads sin interrupción**.
+Los pods de `edge-eu` los maneja su propio kubelet/k3s, totalmente independiente
+de que el hub esté arriba. Sirviendo tráfico siguen igual.
+
+Lo único que se pausa es la **reconciliación**: mientras el hub esté caído, **no
+hay nuevos syncs** —un commit a git no se despliega, un `kubectl edit` a mano no
+se auto-revierte (selfHeal queda en pausa)—. Pero nada de lo que ya estaba
+desplegado se detiene. El hub es crítico para *cambiar* la flota, no para
+*mantenerla corriendo*. Es un single point of failure para el plano de control,
+no para el plano de datos —una distinción que cambia por completo tu cálculo de
+riesgo y tu urgencia para levantarlo.

@@ -99,6 +99,7 @@ export const curriculum: ModuleDef[] = [
       { slug: 'secretos-con-eso', status: 'ready' },
       { slug: 'multi-cluster-applicationset', status: 'ready' },
       { slug: 'migrar-a-gitops', status: 'ready' },
+      { slug: 'hub-and-spoke', status: 'ready' },
     ],
   },
   {
